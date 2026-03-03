@@ -90,6 +90,7 @@ namespace DonGame2D.UI
         }
 
         private Vector3 targetPosition;
+        private Quaternion targetRotation = Quaternion.identity;
         private bool isSmoothMoving = false;
         private float moveSpeed = 15f;
 
@@ -98,18 +99,30 @@ namespace DonGame2D.UI
             if (isSmoothMoving)
             {
                 transform.position = Vector3.Lerp(transform.position, targetPosition, Time.deltaTime * moveSpeed);
-                if (Vector3.Distance(transform.position, targetPosition) < 0.01f)
+                transform.localRotation = Quaternion.Slerp(transform.localRotation, targetRotation, Time.deltaTime * moveSpeed);
+                
+                if (Vector3.Distance(transform.position, targetPosition) < 0.01f && Quaternion.Angle(transform.localRotation, targetRotation) < 0.1f)
                 {
                     transform.position = targetPosition;
+                    transform.localRotation = targetRotation;
                     isSmoothMoving = false;
                 }
             }
+        }
+
+        public void SmoothMoveAndRotateTo(Vector3 targetWorldPos, Quaternion targetLocalRot)
+        {
+            if (IsDragging) return; // ドラッグ中は自動移動を拒否
+            targetPosition = targetWorldPos;
+            targetRotation = targetLocalRot;
+            isSmoothMoving = true;
         }
 
         public void SmoothMoveTo(Vector3 targetWorldPos)
         {
             if (IsDragging) return; // ドラッグ中は自動移動を拒否
             targetPosition = targetWorldPos;
+            targetRotation = transform.localRotation; // 回転はいまの角度を維持
             isSmoothMoving = true;
         }
 
@@ -117,6 +130,7 @@ namespace DonGame2D.UI
         {
             transform.position = worldPos;
             targetPosition = worldPos;
+            targetRotation = transform.localRotation;
             isSmoothMoving = false;
         }
 
@@ -126,7 +140,7 @@ namespace DonGame2D.UI
         {
             cardData = card;
             isUsingFusion = false;
-            if (rectTransform != null) rectTransform.localRotation = Quaternion.identity;
+            // 削除: if (rectTransform != null) rectTransform.localRotation = Quaternion.identity;
 
             UpdateVisuals(card.suit, card.rank, isFaceUp);
         }
@@ -137,7 +151,7 @@ namespace DonGame2D.UI
             EnsureComponents(); // 生成直後の呼び出しに備えてコンポーネントを確保
             cardInfoData = cardInfo;
             isUsingFusion = true;
-            if (rectTransform != null) rectTransform.localRotation = Quaternion.identity;
+            // 削除: if (rectTransform != null) rectTransform.localRotation = Quaternion.identity;
 
             UpdateVisuals(cardInfo.Suit, cardInfo.Rank, isFaceUp);
         }
@@ -323,6 +337,10 @@ namespace DonGame2D.UI
                 rectTransform.anchorMin = new Vector2(0.5f, 0.5f);
                 rectTransform.anchorMax = new Vector2(0.5f, 0.5f);
                 rectTransform.pivot = new Vector2(0.5f, 0.5f);
+                
+                // ドラッグ中は常にカードを「まっすぐ（回転ゼロ）」に戻す
+                transform.localRotation = Quaternion.identity;
+                targetRotation = Quaternion.identity;
                 
                 // オフセットを維持して配置
                 rectTransform.anchoredPosition = mouseLocalPoint + dragOffset;

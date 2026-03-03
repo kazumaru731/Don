@@ -716,13 +716,13 @@ private void UpdateOpponentsUI()
                             yOffsetWorld = yOffsetLocal * playerHandContainer.lossyScale.y;
                         }
 
-                        // 回転を適用
-                        if (playerHandUI[i].transform != null) {
-                            playerHandUI[i].transform.localRotation = Quaternion.Euler(0, 0, currentAngle);
+                        // カーブと回転を同時に滑らかにアニメーションさせる
+                        if (playerHandUI[i] != null) {
+                            playerHandUI[i].SmoothMoveAndRotateTo(
+                                basePos + new Vector3(0, yOffsetWorld, 0),
+                                Quaternion.Euler(0, 0, currentAngle)
+                            );
                         }
-                        
-                        // カーブ分だけ下方向（オフセット）にずらして移動
-                        playerHandUI[i].SmoothMoveTo(basePos + new Vector3(0, yOffsetWorld, 0));
                     }
                 }
             }
