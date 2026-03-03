@@ -20,3 +20,5 @@ UserSettings/
 # OS
 .DS_Store
 Thumbs.db
+.vsconfig
+.vscode/settings.json
