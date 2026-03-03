@@ -904,10 +904,144 @@ private void UpdateOpponentsUI()
             UpdateFusionHandUI(true);
         }
 
+        #region Opponent Animations
+
+        public void PlayOpponentCardAnimation(int actorId, CardInfo card)
+        {
+            var fm = DonFusionManager2D.Instance;
+            if (fm == null || fm.Runner == null) return;
+            
+            // 自分のアクションなら何もしない（自機はドラッグ＆ドロップで即時反映されるため）
+            if (fm.GetActorId(fm.Runner.LocalPlayer) == actorId) return;
+
+            // 誰が出したかを探す
+            opponentUIs.TryGetValue(actorId, out OpponentUIInfo targetOpponent);
+            if (targetOpponent != null)
+            {
+                Debug.Log($"[Anim] PlayOpponentCardAnimation: Actor {actorId} plays {card.Suit}_{card.Rank}");
+                StartCoroutine(OpponentPlayAnimationCoroutine(targetOpponent.transform.position, card));
+            }
+            else
+            {
+                Debug.LogWarning($"[Anim] OpponentUIInfo not found for Actor {actorId}!");
+            }
+        }
+
+        private System.Collections.IEnumerator OpponentPlayAnimationCoroutine(Vector3 startPos, CardInfo card)
+        {
+            isOpponentCardAnimationRunning = true;
+            pendingDiscardCard = default;
+            
+            // キャンバス直下にアニメーション用の一時カードを生成
+            Transform canvasTransform = discardPileContainer.GetComponentInParent<Canvas>().transform;
+            GameObject go = Instantiate(cardPrefab, canvasTransform);
+            
+            // 一番手前に表示
+            go.transform.SetAsLastSibling();
+
+            CardUI ui = go.GetComponent<CardUI>();
+            ui.SetupFusion(card, true); // 表面で飛ばす
+            ui.transform.position = startPos;
+            ui.transform.localScale = Vector3.one;
+
+            // アニメーション
+            float duration = 0.3f;
+            float elapsed = 0f;
+            Vector3 targetPos = discardPileContainer.position;
+
+            while (elapsed < duration)
+            {
+                elapsed += Time.deltaTime;
+                float t = elapsed / duration;
+                float easeOutT = 1f - Mathf.Pow(1f - t, 3f);
+                ui.transform.position = Vector3.Lerp(startPos, targetPos, easeOutT);
+                yield return null;
+            }
+
+            // 到着後に破棄（実際の捨て札UIはRPC_NotifyDiscardChangedによって別途更新される）
+            Destroy(go);
+            
+            // アニメーション完了 → 保留していた捨て札を今すぐ反映する
+            isOpponentCardAnimationRunning = false;
+            if (pendingDiscardCard.Rank != 0)
+            {
+                OnDiscardPileChanged(pendingDiscardCard);
+                pendingDiscardCard = default;
+            }
+        }
+
+        public void PlayOpponentDrawAnimation(int actorId, int count)
+        {
+            var fm = DonFusionManager2D.Instance;
+            if (fm == null || fm.Runner == null) return;
+            
+            if (fm.GetActorId(fm.Runner.LocalPlayer) == actorId) return;
+
+            opponentUIs.TryGetValue(actorId, out OpponentUIInfo targetOpponent);
+            if (targetOpponent != null)
+            {
+                Debug.Log($"[Anim] PlayOpponentDrawAnimation: Actor {actorId} draws {count} cards");
+                StartCoroutine(OpponentDrawAnimationCoroutine(targetOpponent.transform.position, count));
+            }
+            else
+            {
+                Debug.LogWarning($"[Anim] OpponentUIInfo not found for Actor {actorId}!");
+            }
+        }
+
+        private System.Collections.IEnumerator OpponentDrawAnimationCoroutine(Vector3 targetPos, int count)
+        {
+            Transform canvasTransform = discardPileContainer.GetComponentInParent<Canvas>().transform;
+            Vector3 startPos = deckPileContainer.position; // 山札から出発
+
+            for (int i = 0; i < count; i++)
+            {
+                GameObject go = Instantiate(cardPrefab, canvasTransform);
+                go.transform.SetAsLastSibling();
+
+                CardUI ui = go.GetComponent<CardUI>();
+                // ドロー時は裏面
+                ui.SetupFusion(new CardInfo(Suit.Hearts, 1), false); // ダミーデータで裏面生成
+                ui.transform.position = startPos;
+                ui.transform.localScale = Vector3.one;
+
+                StartCoroutine(AnimateSingleOpponentDraw(go, startPos, targetPos));
+
+                // 複数枚ある場合は少しずらして発射
+                yield return new WaitForSeconds(0.1f);
+            }
+        }
+
+        private System.Collections.IEnumerator AnimateSingleOpponentDraw(GameObject cardObj, Vector3 start, Vector3 target)
+        {
+            float duration = 0.3f;
+            float elapsed = 0f;
+
+            while (elapsed < duration && cardObj != null)
+            {
+                elapsed += Time.deltaTime;
+                float t = elapsed / duration;
+                float easeOutT = 1f - Mathf.Pow(1f - t, 3f);
+                cardObj.transform.position = Vector3.Lerp(start, target, easeOutT);
+                yield return null;
+            }
+
+            if (cardObj != null)
+            {
+                Destroy(cardObj);
+            }
+        }
+
+        #endregion
+
         private int lastDiscardPileCount = -1;
         private Suit lastTopCardSuit = (Suit)(-1);
         private int lastTopCardRank = -1;
         private int lastActiveSuitInt = -1;
+        
+        // 相手のカード提出アニメーション実行中フラグ
+        private bool isOpponentCardAnimationRunning = false;
+        private CardInfo pendingDiscardCard = default;  // アニメーション完了待ちの捨て札情報
 
         /// <summary>
         /// DonFusionManager2D から RPC 経由で呼ばれる捨て札通知。
@@ -916,6 +1050,13 @@ private void UpdateOpponentsUI()
 public void OnDiscardPileChanged(DonGame2D.Models.CardInfo topCard)
         {
             if (topCard.Rank == 0) return;
+            
+            // アニメーション実行中は更新を延龐する
+            if (isOpponentCardAnimationRunning)
+            {
+                pendingDiscardCard = topCard;
+                return;
+            }
 
             CardUI ui = null;
             if (discardPileContainer != null && discardPileContainer.childCount > 0)

@@ -597,6 +597,19 @@ public void RPC_FriendMatchForceStart(int targetPlayers)
             }
         }
 
+        [Rpc(RpcSources.StateAuthority, RpcTargets.All)]
+        public void RPC_NotifyOpponentPlayCard(int actorId, CardInfo card)
+        {
+            var ui = FindObjectOfType<DonGame2D.UI.GameUIController>();
+            if (ui != null) ui.PlayOpponentCardAnimation(actorId, card);
+        }
+
+        [Rpc(RpcSources.StateAuthority, RpcTargets.All)]
+        public void RPC_NotifyOpponentDrawCard(int actorId, int count)
+        {
+            var ui = FindObjectOfType<DonGame2D.UI.GameUIController>();
+            if (ui != null) ui.PlayOpponentDrawAnimation(actorId, count);
+        }
         
         [Rpc(RpcSources.StateAuthority, RpcTargets.All)]
         private void RPC_NotifyDiscardChanged(CardInfo topCard)
@@ -696,6 +709,9 @@ private void AddCardToDiscard(CardInfo card, bool isInitialPlay = true)
             // サーバ�E側�E�権限老E��で最終確認して状態更新
             AddCardToDiscard(card);
             ServerRemoveCardFromHand(actorId, card);
+            
+            // アニメーション用の通知
+            RPC_NotifyOpponentPlayCard(actorId, card);
 
             if (card.Rank == 2)
             {
@@ -790,6 +806,9 @@ private void AddCardToDiscard(CardInfo card, bool isInitialPlay = true)
             if (cardsDrawn > 0)
             {
                 UpdateHandCount(actorId, cardsDrawn);
+                
+                // アニメーション用の通知
+                RPC_NotifyOpponentDrawCard(actorId, cardsDrawn);
             }
             RotateTurn();
         }
@@ -1182,6 +1201,9 @@ private void AddCardToDiscard(CardInfo card, bool isInitialPlay = true)
                     ServerRemoveCardFromHand(cpuActor.ActorId, playCard);
                     if (playCard.Rank == 2) DrawPenaltyCount += 2;
                     UpdateHandCount(cpuActor.ActorId, -1);
+                    
+                    // アニメーション通知
+                    RPC_NotifyOpponentPlayCard(cpuActor.ActorId, playCard);
 
                     if (hand.Count == 0)
                     {
@@ -1219,6 +1241,9 @@ private void AddCardToDiscard(CardInfo card, bool isInitialPlay = true)
                     if (cardsDrawn > 0)
                     {
                         UpdateHandCount(cpuActor.ActorId, cardsDrawn);
+                        
+                        // アニメーション通知
+                        RPC_NotifyOpponentDrawCard(cpuActor.ActorId, cardsDrawn);
                     }
                     RotateTurn();
                 }
