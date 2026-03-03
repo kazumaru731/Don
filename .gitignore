@@ -1,0 +1,22 @@
+[Ll]ibrary/
+[Tt]emp/
+[Oo]bj/
+[Bb]uild/
+[Bb]uilds/
+[Ll]ogs/
+[Mm]emoryCaptures/
+UserSettings/
+
+.vs/
+*.csproj
+*.sln
+*.user
+.idea/
+
+# Unity auto-generated
+*.pidb
+*.booproj
+
+# OS
+.DS_Store
+Thumbs.db
