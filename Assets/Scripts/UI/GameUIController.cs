@@ -518,11 +518,37 @@ private void UpdateOpponentsUI()
             }
         }
         
-        if (arrayIndex >= 0 && arrayIndex < fm.PlayerHandCounts.Length)
+                if (arrayIndex >= 0 && arrayIndex < fm.PlayerHandCounts.Length)
         {
             int count = fm.PlayerHandCounts.Get(arrayIndex);
-            opponentUIs[op.ActorId].Setup(op.ActorId, count, count == 1);
+            bool isAnimating = opponentAnimatingFlags.TryGetValue(op.ActorId, out bool animFlag) && animFlag;
+            
+            // アニメーション中かどうかを確認
+            if (!isAnimating)
+            {
+                opponentUIs[op.ActorId].Setup(op.ActorId, count, count == 1);
+            }
+            else
+            {
+                // アニメーション中であっても、枚数が「減る」方向の更新であれば即座に数値とアイコンを反映する
+                // これにより、カードを投げた瞬間に手元のカードが減る
+                int currentDisplayCount = 0;
+                if (opponentUIs[op.ActorId].countText != null)
+                {
+                    string txt = opponentUIs[op.ActorId].countText.text.Replace("x", "");
+                    int.TryParse(txt, out currentDisplayCount);
+                }
+
+                if (count < currentDisplayCount)
+                {
+                    opponentUIs[op.ActorId].Setup(op.ActorId, count, count == 1);
+                }
+                
+                // アニメーション完了後に最終的な枚数を再反映するため、最新値を保持しておく（ドロー時など増える方向の対応）
+                pendingOpponentHandCounts[op.ActorId] = count;
+            }
         }
+
 
         // ターンのプレイヤーをハイライトする
         opponentUIs[op.ActorId].SetTurnActive(fm.CurrentTurnPlayerActorId == op.ActorId);
@@ -919,7 +945,9 @@ private void UpdateOpponentsUI()
             if (targetOpponent != null)
             {
                 Debug.Log($"[Anim] PlayOpponentCardAnimation: Actor {actorId} plays {card.Suit}_{card.Rank}");
-                StartCoroutine(OpponentPlayAnimationCoroutine(targetOpponent.transform.position, card));
+                // アニメーション開始前にフラグを立て、UpdateOpponentsUI()での手札枚数更新を抑制する
+                opponentAnimatingFlags[actorId] = true;
+                StartCoroutine(OpponentPlayAnimationCoroutine(actorId, targetOpponent.transform.position, card));
             }
             else
             {
@@ -927,7 +955,7 @@ private void UpdateOpponentsUI()
             }
         }
 
-        private System.Collections.IEnumerator OpponentPlayAnimationCoroutine(Vector3 startPos, CardInfo card)
+        private System.Collections.IEnumerator OpponentPlayAnimationCoroutine(int actorId, Vector3 startPos, CardInfo card)
         {
             isOpponentCardAnimationRunning = true;
             pendingDiscardCard = default;
@@ -961,8 +989,19 @@ private void UpdateOpponentsUI()
             // 到着後に破棄（実際の捨て札UIはRPC_NotifyDiscardChangedによって別途更新される）
             Destroy(go);
             
-            // アニメーション完了 → 保留していた捨て札を今すぐ反映する
+            // アニメーション完了 → フラグを解除し、保留していた手札枚数を反映する
             isOpponentCardAnimationRunning = false;
+            opponentAnimatingFlags[actorId] = false;
+
+            // アニメーション中に保留されていた手札枚数を今すぐ反映する
+            if (pendingOpponentHandCounts.TryGetValue(actorId, out int pendingCount) &&
+                opponentUIs.TryGetValue(actorId, out OpponentUIInfo opUI))
+            {
+                opUI.Setup(actorId, pendingCount, pendingCount == 1);
+                pendingOpponentHandCounts.Remove(actorId);
+            }
+
+            // 保留していた捨て札を今すぐ反映する
             if (pendingDiscardCard.Rank != 0)
             {
                 OnDiscardPileChanged(pendingDiscardCard);
@@ -981,7 +1020,9 @@ private void UpdateOpponentsUI()
             if (targetOpponent != null)
             {
                 Debug.Log($"[Anim] PlayOpponentDrawAnimation: Actor {actorId} draws {count} cards");
-                StartCoroutine(OpponentDrawAnimationCoroutine(targetOpponent.transform.position, count));
+                // アニメーション開始前にフラグを立て、UpdateOpponentsUI()での手札枚数更新を抑制する
+                opponentAnimatingFlags[actorId] = true;
+                StartCoroutine(OpponentDrawAnimationCoroutine(actorId, targetOpponent.transform.position, count));
             }
             else
             {
@@ -989,10 +1030,14 @@ private void UpdateOpponentsUI()
             }
         }
 
-        private System.Collections.IEnumerator OpponentDrawAnimationCoroutine(Vector3 targetPos, int count)
+        private System.Collections.IEnumerator OpponentDrawAnimationCoroutine(int actorId, Vector3 targetPos, int count)
         {
             Transform canvasTransform = discardPileContainer.GetComponentInParent<Canvas>().transform;
             Vector3 startPos = deckPileContainer.position; // 山札から出発
+
+            // 最後のカードのアニメーション完了を待つために自前でトラッキングする
+            float lastCardDuration = 0.3f;
+            float lastCardDelay = (count - 1) * 0.1f; // 最後のカードが発射されるまでの遅延
 
             for (int i = 0; i < count; i++)
             {
@@ -1009,6 +1054,20 @@ private void UpdateOpponentsUI()
 
                 // 複数枚ある場合は少しずらして発射
                 yield return new WaitForSeconds(0.1f);
+            }
+
+            // 最後のカードのアニメーション（0.3秒）が完了するまで待機
+            yield return new WaitForSeconds(lastCardDuration);
+
+            // 全アニメーション完了 → フラグを解除し、保留していた手札枚数を反映する
+            opponentAnimatingFlags[actorId] = false;
+
+            // アニメーション中に保留されていた手札枚数を今すぐ反映する
+            if (pendingOpponentHandCounts.TryGetValue(actorId, out int pendingCount) &&
+                opponentUIs.TryGetValue(actorId, out OpponentUIInfo opUI))
+            {
+                opUI.Setup(actorId, pendingCount, pendingCount == 1);
+                pendingOpponentHandCounts.Remove(actorId);
             }
         }
 
@@ -1037,11 +1096,24 @@ private void UpdateOpponentsUI()
         private int lastDiscardPileCount = -1;
         private Suit lastTopCardSuit = (Suit)(-1);
         private int lastTopCardRank = -1;
-        private int lastActiveSuitInt = -1;
+        
+        private bool isLocalPlayerDiscarding = false;
+
+        public void SetLocalPlayerDiscarding(bool value)
+        {
+            isLocalPlayerDiscarding = value;
+        }
+private int lastActiveSuitInt = -1;
         
         // 相手のカード提出アニメーション実行中フラグ
         private bool isOpponentCardAnimationRunning = false;
         private CardInfo pendingDiscardCard = default;  // アニメーション完了待ちの捨て札情報
+
+        // 各相手アクターのアニメーション実行中フラグ（actorId → true=アニメーション中）
+        // アニメーション完了前に手札枚数UIが更新されないようにするための制御用
+        private Dictionary<int, bool> opponentAnimatingFlags = new Dictionary<int, bool>();
+        // アニメーション完了後に反映すべき手札枚数（actorId → 枚数）
+        private Dictionary<int, int> pendingOpponentHandCounts = new Dictionary<int, int>();
 
         /// <summary>
         /// DonFusionManager2D から RPC 経由で呼ばれる捨て札通知。
@@ -1106,8 +1178,12 @@ public void OnDiscardPileChanged(DonGame2D.Models.CardInfo topCard)
         }
 
         
-private void UpdateFusionDiscardPileUI()
+
+                    private void UpdateFusionDiscardPileUI()
         {
+            // 相手のカード提出アニメーション実行中は、ポーリングによる即時更新を停止する
+            if (isOpponentCardAnimationRunning) return;
+
             var fm = DonFusionManager2D.Instance;
             if (fm.DiscardCount > 0)
             {

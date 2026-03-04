@@ -685,13 +685,17 @@ private void AddCardToDiscard(CardInfo card, bool isInitialPlay = true)
             {
                 myLocalHand.Remove(card);
                 RPC_SubmitCard(Runner.LocalPlayer, card);
+                
+                // ローカルでの提出中フラグを立てて、UpdateFusionDiscardPileUI のガードを一時的に外す
+                var gameUI = UnityEngine.Object.FindObjectOfType<UI.GameUIController>();
+                if (gameUI != null) gameUI.SetLocalPlayerDiscarding(true);
+
                 OnHandUpdated?.Invoke();
 
                 if (card.Rank == 8)
                 {
                     // 8の場合�Eスート選択UIを表示
-                    var gameUI = UnityEngine.Object.FindObjectOfType<UI.GameUIController>();
-                    if (gameUI != null) gameUI.ShowSuitSelectionUI();
+                                        if (gameUI != null) gameUI.ShowSuitSelectionUI();
                 }
 
                 return true;
@@ -707,11 +711,12 @@ private void AddCardToDiscard(CardInfo card, bool isInitialPlay = true)
             int actorId = GetActorId(player);
 
             // サーバ�E側�E�権限老E��で最終確認して状態更新
+                        // アニメーション通知を先に送る
+            RPC_NotifyOpponentPlayCard(actorId, card);
+
             AddCardToDiscard(card);
             ServerRemoveCardFromHand(actorId, card);
-            
-            // アニメーション用の通知
-            RPC_NotifyOpponentPlayCard(actorId, card);
+
 
             if (card.Rank == 2)
             {
@@ -1197,13 +1202,13 @@ private void AddCardToDiscard(CardInfo card, bool isInitialPlay = true)
                     CardInfo playCard = playableCards.OrderByDescending(c => c.Rank).First();
                     hand.Remove(playCard);
 
+                    // アニメーション通知を先に送る
+                    RPC_NotifyOpponentPlayCard(cpuActor.ActorId, playCard);
+
                     AddCardToDiscard(playCard);
                     ServerRemoveCardFromHand(cpuActor.ActorId, playCard);
                     if (playCard.Rank == 2) DrawPenaltyCount += 2;
                     UpdateHandCount(cpuActor.ActorId, -1);
-                    
-                    // アニメーション通知
-                    RPC_NotifyOpponentPlayCard(cpuActor.ActorId, playCard);
 
                     if (hand.Count == 0)
                     {

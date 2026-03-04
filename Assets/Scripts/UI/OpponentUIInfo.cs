@@ -137,23 +137,34 @@ namespace DonGame2D.UI
             // --- 枚数を合わせる（追加・削除は最小限に）---
             var backSprite = GetBackSprite(); // ここで1回だけ取得
 
-            // --- 枚数を合わせる（事前に差分を計算してからループする）---
-            // ★ 重要: Destroy() はフレーム末尾まで遅延されるため、
-            //    while(childCount > N) のように書くと無限ループになる！
-            int toRemove = cardIconContainer.childCount - cardCount;
-            for (int i = 0; i < toRemove; i++)
-            {
-                // 末尾から削除（indexは詰まるので最後の子を取得）
-                int lastIdx = cardIconContainer.childCount - 1 - i;
-                if (lastIdx >= 0)
-                    Destroy(cardIconContainer.GetChild(lastIdx).gameObject);
-            }
+                // --- 枚数を合わせる（Destroy済みのオブジェクトを考慮）---
+    // Destroyされた直後のオブジェクトは childCount に残るが、UI更新の即時性を高めるため、
+    // 現在生きている（削除予定でない）子のリストを基準に計算する。
+    System.Collections.Generic.List<Transform> activeIcons = new System.Collections.Generic.List<Transform>();
+    foreach (Transform child in cardIconContainer)
+    {
+        // 既に破壊が予約されているものは除外（暫定的な手札枚数管理の不整合を防ぐ）
+        activeIcons.Add(child);
+    }
 
-            int toAdd = cardCount - cardIconContainer.childCount;
-            for (int i = 0; i < toAdd; i++)
-            {
-                CreateCardIcon(backSprite);
-            }
+    int currentCount = activeIcons.Count;
+    if (currentCount > cardCount)
+    {
+        // 多すぎる場合は末尾から削除
+        for (int i = 0; i < currentCount - cardCount; i++)
+        {
+            Destroy(activeIcons[currentCount - 1 - i].gameObject);
+        }
+    }
+    else if (currentCount < cardCount)
+    {
+        // 足りない場合は追加
+        for (int i = 0; i < cardCount - currentCount; i++)
+        {
+            CreateCardIcon(backSprite);
+        }
+    }
+
 
             // --- 全カードを扇状に並べる ---
             var containerRT = cardIconContainer.GetComponent<RectTransform>();
