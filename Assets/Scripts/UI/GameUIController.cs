@@ -30,6 +30,17 @@ namespace DonGame2D.UI
         public GameObject resultPanel;
         public Text resultText;
 
+        [Header("Fonts")]
+        public Font mainFontRegular;
+        public Font mainFontBold;
+
+        [Header("Score Animation")]
+        public ScoreAnimationController scoreAnimationController;
+
+        [Header("Round UI")]
+        public Text roundText; // 左上のラウンド表示用
+
+
         [Header("Animation")]
         public GameObject animationOverlay;     // アニメーション中の背景暗転用
         public Transform revealedHandContainer; // 敗者の手札を中央に表示する用
@@ -257,17 +268,13 @@ private bool isDealingAnimationRunning = false; // 配布アニメーション�
 
         private void OnFusionHandUpdated()
         {
-            // Fusion側の手札が更新された際に呼ばれる
             UpdateFusionHandUI();
         }
 
-private void UpdateFusionUIState()
+        private void UpdateFusionUIState()
         {
             var fm = DonFusionManager2D.Instance;
 
-            // ===== Donボタンの遅延初期化 =====
-            // Start()では GameCanvas が非アクティブのため失敗するが、
-            // ここはゲーム実行中に必ず呼ばれるので安全に作成できる
             if (!isDonButtonSetup)
             {
                 if (discardDonButton == null)
@@ -301,7 +308,6 @@ private void UpdateFusionUIState()
             bool isMyTurn = fm.Runner != null && fm.CurrentTurnPlayerActorId == fm.Runner.LocalPlayer.PlayerId;
             int localPlayerId = fm.Runner.LocalPlayer.PlayerId;
 
-            // ローカルプレイヤーの ActorId（1～4のゲーム内 ID）を取得
             int localActorId = -1;
             for (int i = 0; i < 4; i++)
             {
@@ -344,9 +350,26 @@ private void UpdateFusionUIState()
             }
 
             if (fm.PlayerCredits.TryGet(localPlayerId, out var credits)) { } else credits = 0;
-            string scoreInfo = $"RD {fm.CurrentRound}/5 | {credits} Credits";
-            if (fm.DrawPenaltyCount > 0) scoreInfo += $" | Penalty: +{fm.DrawPenaltyCount}";
-            penaltyText.text = scoreInfo;
+            
+            // Round UI logic: Use roundText (card in corner) if available
+            if (roundText != null)
+            {
+                roundText.text = $"{fm.CurrentRound}/5";
+                if (roundText.transform.parent != null && !roundText.transform.parent.gameObject.activeSelf)
+                {
+                    roundText.transform.parent.gameObject.SetActive(true);
+                }
+
+                string scoreInfo = $"{credits} Credits";
+                if (fm.DrawPenaltyCount > 0) scoreInfo += $" | Penalty: +{fm.DrawPenaltyCount}";
+                penaltyText.text = scoreInfo;
+            }
+            else
+            {
+                string scoreInfo = $"RD {fm.CurrentRound}/5 | {credits} Credits";
+                if (fm.DrawPenaltyCount > 0) scoreInfo += $" | Penalty: +{fm.DrawPenaltyCount}";
+                penaltyText.text = scoreInfo;
+            }
 
             if (fm.IsRoundOver && resultPanel != null && resultPanel.activeSelf)
             {
@@ -362,7 +385,6 @@ private void UpdateFusionUIState()
                 }
             }
 
-            // Donボタンの表示制御
             if (discardDonButton != null)
             {
                 bool canDon = false;
@@ -374,7 +396,6 @@ private void UpdateFusionUIState()
 
                     if (fm.IsWaitingForDonGaeshi)
                     {
-                        // Don返し：カードを出したプレイヤーが返せるか判定
                         if (fm.DonTargetActorId == localActorId && myTotal == topCard.Rank) canDon = true;
                     }
                     else
@@ -408,165 +429,136 @@ private void UpdateFusionUIState()
             UpdateOpponentsUI();
         }
 
-private void UpdateOpponentsUI()
-{
-    var fm = DonFusionManager2D.Instance;
-    if (fm == null || opponentInfoContainer == null || opponentInfoPrefab == null) return;
-
-    if (fm.Runner == null || !fm.Runner.IsRunning) return;
-
-    int localActorId = -1;
-    // 自分のActorIdを特定
-    for (int i = 0; i < 4; i++)
-    {
-        var ac = fm.Actors.Get(i);
-        if (ac.IsActive && !ac.IsCPU && ac.PlayerRef == fm.Runner.LocalPlayer)
+        private void UpdateOpponentsUI()
         {
-            localActorId = ac.ActorId;
-            break;
-        }
-    }
+            var fm = DonFusionManager2D.Instance;
+            if (fm == null || opponentInfoContainer == null || opponentInfoPrefab == null) return;
+            if (fm.Runner == null || !fm.Runner.IsRunning) return;
 
-    if (localActorId == -1) return; // 自分がまだActorとして登録されていない場合
-
-    var activeActors = new System.Collections.Generic.List<DonGame2D.Logic.ActorInfo>();
-    for (int i = 0; i < 4; i++)
-    {
-        var actor = fm.Actors.Get(i);
-        if (actor.IsActive) activeActors.Add(actor);
-    }
-    
-    // ソートして位置計算を安定させる
-    var sortedActiveActors = activeActors.OrderBy(a => a.ActorId).ToList();
-
-    // 自分以外を抽出
-    var opponents = sortedActiveActors.Where(a => a.ActorId != localActorId).ToList();
-
-    // 不要なUIを削除
-    var currentOpponentIds = opponents.Select(a => a.ActorId).ToList();
-    var idsToRemove = opponentUIs.Keys.Where(id => !currentOpponentIds.Contains(id)).ToList();
-    foreach (var id in idsToRemove)
-    {
-        if (opponentUIs[id] != null) Destroy(opponentUIs[id].gameObject);
-        opponentUIs.Remove(id);
-    }
-
-    int totalPlayers = sortedActiveActors.Count;
-    int myIdx = sortedActiveActors.FindIndex(a => a.ActorId == localActorId);
-
-    foreach (var op in opponents)
-    {
-        // プレハブの元のアンカーが左下になっている等により原点がズレるのを防ぐため、毎回明示的に中央揃えにする
-        if (!opponentUIs.ContainsKey(op.ActorId))
-        {
-            GameObject go = Instantiate(opponentInfoPrefab, opponentInfoContainer);
-            opponentUIs[op.ActorId] = go.GetComponent<OpponentUIInfo>();
-            
-            var rt = go.GetComponent<RectTransform>();
-            if (rt != null)
+            int localActorId = -1;
+            for (int i = 0; i < 4; i++)
             {
-                rt.anchorMin = new Vector2(0.5f, 0.5f);
-                rt.anchorMax = new Vector2(0.5f, 0.5f);
-                rt.pivot = new Vector2(0.5f, 0.5f);
-            }
-            Debug.Log($"[UI] Instantiate Opponent UI for Actor {op.ActorId}");
-        }
-
-        // --- 画面の中央（捨て札と山札の間）を基準とした楕円状配置 ---
-        Vector2 centerPos = Vector2.zero;
-        if (discardPileContainer != null && deckPileContainer != null)
-        {
-            // 捨て札と山札のワールド座標の中間点を取得
-            Vector3 worldCenter = (discardPileContainer.position + deckPileContainer.position) / 2f;
-            // 相手UIの親コンテナから見たローカル座標に変換する
-            centerPos = opponentInfoContainer.InverseTransformPoint(worldCenter);
-        }
-
-        // 自分から時計回りに何番目か (1 ~ N-1)
-        int opIdx = sortedActiveActors.FindIndex(a => a.ActorId == op.ActorId);
-        int relativeIndex = (opIdx - myIdx + totalPlayers) % totalPlayers;
-
-        // 自分（LocalPlayer）の位置を 270度（画面下中央）とする
-        // 各プレイヤーを時計回りに配置するため、角度を引いていく（極座標ではマイナスが時計回り）
-        // 4人の場合: My(270) -> P2(180=左) -> P3(90=上) -> P4(0=右)
-        float interval = 360f / totalPlayers;
-        float angle = 270f - (interval * relativeIndex);
-        
-        // 画面の縦横比に沿った楕円形にするため、X・Y個別に半径を計算
-        var containerRT = opponentInfoContainer.GetComponent<RectTransform>();
-        // 横幅の約44%, 縦幅の約42%を半径にする (テーブル淵付近に収める)
-        float radiusX = containerRT.rect.width * 0.44f;
-        float radiusY = containerRT.rect.height * 0.42f;
-        
-        float rad = angle * Mathf.Deg2Rad;
-        Vector2 pos = centerPos + new Vector2(Mathf.Cos(rad) * radiusX, Mathf.Sin(rad) * radiusY);
-        
-        // レイアウト更新（angle + 90f：OpponentUIInfoの扇の「根元(下)」が淵側に、広がりが中央を向くように補正）
-        opponentUIs[op.ActorId].UpdateLayout(pos, angle + 90f);
-        
-        // スケールを等倍に戻し、他（捨て札等）と大きさを合わせる
-        opponentUIs[op.ActorId].transform.localScale = Vector3.one;
-
-        // PlayerHandCounts は Actors 配列のインデックスに対応（0~3）
-        int arrayIndex = -1;
-        for (int i = 0; i < 4; i++)
-        {
-            if (fm.Actors.Get(i).ActorId == op.ActorId)
-            {
-                arrayIndex = i;
-                break;
-            }
-        }
-        
-                if (arrayIndex >= 0 && arrayIndex < fm.PlayerHandCounts.Length)
-        {
-            int count = fm.PlayerHandCounts.Get(arrayIndex);
-            bool isAnimating = opponentAnimatingFlags.TryGetValue(op.ActorId, out bool animFlag) && animFlag;
-            
-            // アニメーション中かどうかを確認
-            if (!isAnimating)
-            {
-                opponentUIs[op.ActorId].Setup(op.ActorId, count, count == 1);
-            }
-            else
-            {
-                // アニメーション中であっても、枚数が「減る」方向の更新であれば即座に数値とアイコンを反映する
-                // これにより、カードを投げた瞬間に手元のカードが減る
-                int currentDisplayCount = 0;
-                if (opponentUIs[op.ActorId].countText != null)
+                var ac = fm.Actors.Get(i);
+                if (ac.IsActive && !ac.IsCPU && ac.PlayerRef == fm.Runner.LocalPlayer)
                 {
-                    string txt = opponentUIs[op.ActorId].countText.text.Replace("x", "");
-                    int.TryParse(txt, out currentDisplayCount);
+                    localActorId = ac.ActorId;
+                    break;
+                }
+            }
+
+            if (localActorId == -1) return;
+
+            var activeActors = new List<ActorInfo>();
+            for (int i = 0; i < 4; i++)
+            {
+                var actor = fm.Actors.Get(i);
+                if (actor.IsActive) activeActors.Add(actor);
+            }
+            
+            // ソートして位置計算を安定させる
+            var sortedActiveActors = activeActors.OrderBy(a => a.ActorId).ToList();
+
+            // 自分以外を抽出
+            var opponents = sortedActiveActors.Where(a => a.ActorId != localActorId).ToList();
+
+            // 不要なUIを削除
+            var currentOpponentIds = opponents.Select(a => a.ActorId).ToList();
+            var idsToRemove = opponentUIs.Keys.Where(id => !currentOpponentIds.Contains(id)).ToList();
+            foreach (var id in idsToRemove)
+            {
+                if (opponentUIs[id] != null) Destroy(opponentUIs[id].gameObject);
+                opponentUIs.Remove(id);
+            }
+
+            int totalPlayers = sortedActiveActors.Count;
+            int myIdx = sortedActiveActors.FindIndex(a => a.ActorId == localActorId);
+
+            foreach (var op in opponents)
+            {
+                if (!opponentUIs.ContainsKey(op.ActorId))
+                {
+                    GameObject go = Instantiate(opponentInfoPrefab, opponentInfoContainer);
+                    opponentUIs[op.ActorId] = go.GetComponent<OpponentUIInfo>();
+                    
+                    var rt = go.GetComponent<RectTransform>();
+                    if (rt != null)
+                    {
+                        rt.anchorMin = new Vector2(0.5f, 0.5f);
+                        rt.anchorMax = new Vector2(0.5f, 0.5f);
+                        rt.pivot = new Vector2(0.5f, 0.5f);
+                    }
                 }
 
-                if (count < currentDisplayCount)
+                Vector2 centerPos = Vector2.zero;
+                if (discardPileContainer != null && deckPileContainer != null)
                 {
-                    opponentUIs[op.ActorId].Setup(op.ActorId, count, count == 1);
+                    Vector3 worldCenter = (discardPileContainer.position + deckPileContainer.position) / 2f;
+                    centerPos = opponentInfoContainer.InverseTransformPoint(worldCenter);
+                }
+
+                int opIdx = sortedActiveActors.FindIndex(a => a.ActorId == op.ActorId);
+                int relativeIndex = (opIdx - myIdx + totalPlayers) % totalPlayers;
+
+                float interval = 360f / totalPlayers;
+                float angle = 270f - (interval * relativeIndex);
+                
+                var containerRT = opponentInfoContainer.GetComponent<RectTransform>();
+                float radiusX = containerRT.rect.width * 0.40f;
+                float radiusY = containerRT.rect.height * 0.36f;
+
+                float rad = angle * Mathf.Deg2Rad;
+                Vector2 pos = centerPos + new Vector2(Mathf.Cos(rad) * radiusX, Mathf.Sin(rad) * radiusY);
+                
+                opponentUIs[op.ActorId].UpdateLayout(pos, angle + 90f);
+                opponentUIs[op.ActorId].transform.localScale = Vector3.one;
+
+                int arrayIndex = -1;
+                for (int i = 0; i < 4; i++)
+                {
+                    if (fm.Actors.Get(i).ActorId == op.ActorId)
+                    {
+                        arrayIndex = i;
+                        break;
+                    }
                 }
                 
-                // アニメーション完了後に最終的な枚数を再反映するため、最新値を保持しておく（ドロー時など増える方向の対応）
-                pendingOpponentHandCounts[op.ActorId] = count;
+                if (arrayIndex >= 0 && arrayIndex < fm.PlayerHandCounts.Length)
+                {
+                    int count = fm.PlayerHandCounts.Get(arrayIndex);
+                    bool isAnimating = opponentAnimatingFlags.TryGetValue(op.ActorId, out bool animFlag) && animFlag;
+                    
+                    if (!isAnimating)
+                    {
+                        opponentUIs[op.ActorId].Setup(op.ActorId, count, count == 1);
+                    }
+                    else
+                    {
+                        int currentDisplayCount = 0;
+                        if (opponentUIs[op.ActorId].countText != null)
+                        {
+                            string txt = opponentUIs[op.ActorId].countText.text.Replace("x", "");
+                            int.TryParse(txt, out currentDisplayCount);
+                        }
+
+                        if (count < currentDisplayCount)
+                        {
+                            opponentUIs[op.ActorId].Setup(op.ActorId, count, count == 1);
+                        }
+                        pendingOpponentHandCounts[op.ActorId] = count;
+                    }
+                }
+
+                opponentUIs[op.ActorId].SetTurnActive(fm.CurrentTurnPlayerActorId == op.ActorId);
             }
         }
-
-
-        // ターンのプレイヤーをハイライトする
-        opponentUIs[op.ActorId].SetTurnActive(fm.CurrentTurnPlayerActorId == op.ActorId);
-    }
-}
 
         public void UpdateFusionHandUI(bool skipAnimation = false)
         {
             var fm = DonFusionManager2D.Instance;
             
-            // ===== 1. アニメーション中の新規カード検知（skipAnimation=falseの時のみ）=====
-            // この処理は isDealingAnimationRunning に関わらず、常に実行する
             if (!skipAnimation && playerHandUI.Count > 0 && deckPileContainer != null)
             {
-                // 現在表示済み + アニメーション中 + キュー待機中の合計数
                 int currentTotalShowing = playerHandUI.Count + inFlightAnimationCount + pendingDrawAnimations.Count;
-                
-                // データ上の手札が増えていれば差分をキューに積む
                 if (fm.myLocalHand.Count > currentTotalShowing)
                 {
                     for (int i = currentTotalShowing; i < fm.myLocalHand.Count; i++)
@@ -574,7 +566,6 @@ private void UpdateOpponentsUI()
                         pendingDrawAnimations.Enqueue(fm.myLocalHand[i]);
                     }
 
-                    // アニメーションが走っていなければ新たに開始
                     if (!isDealingAnimationRunning)
                     {
                         StartCoroutine(ProcessDrawAnimationQueue());
@@ -582,14 +573,11 @@ private void UpdateOpponentsUI()
                 }
             }
             
-            // ===== 2. アニメーション中はUI再構築をスキップ =====
-            // ただし、skipAnimation が true (内部的な並べ替えなど) の場合は許可する
             if (!skipAnimation && (isDealingAnimationRunning || pendingDrawAnimations.Count > 0))
             {
                 return;
             }
 
-            // ===== 3. 初期配布の検知（アニメーションなし・skipAnimationに関わらず） =====
             if (!skipAnimation && playerHandUI.Count == 0 && fm.myLocalHand.Count > 0)
             {
                 if (fm.myLocalHand.Count < fm.initialHandCount) return;
@@ -601,19 +589,16 @@ private void UpdateOpponentsUI()
                 }
             }
 
-            // ===== 4. 手札 UI の更新（アニメーションあり・再利用） =====
             UpdateHandWithAnimation(fm.myLocalHand);
         }
 
         private void UpdateHandWithAnimation(List<CardInfo> myHand)
         {
-            // ビジュアル用の親コンテナを確保（LayoutGroupがない親）
             if (handVisualParent == null)
             {
                 GameObject go = new GameObject("HandVisualParent", typeof(RectTransform));
                 go.transform.SetParent(playerHandContainer.parent, false);
                 handVisualParent = go.transform;
-                // playerHandContainer と同じ位置・サイズに合わせる（アンカー設定など必要なら）
                 RectTransform rt = go.GetComponent<RectTransform>();
                 RectTransform source = playerHandContainer.GetComponent<RectTransform>();
                 rt.anchorMin = source.anchorMin;
@@ -623,7 +608,6 @@ private void UpdateOpponentsUI()
                 rt.sizeDelta = source.sizeDelta;
             }
 
-            // 1. ダミースロットの数を合わせる (playerHandContainer は LayoutGroup を持つ)
             while (dummySlots.Count < myHand.Count)
             {
                 GameObject dummyObj = new GameObject("DummySlot", typeof(RectTransform), typeof(LayoutElement));
@@ -639,16 +623,15 @@ private void UpdateOpponentsUI()
                 dummySlots.RemoveAt(dummySlots.Count - 1);
             }
 
-            // 2. CardUI (実体) の管理 (CardInfo に基づいて個体を維持)
+            RefreshSlotWidths(CalcSlotWidth(myHand.Count));
+
             playerHandUI.RemoveAll(item => item == null);
-            
             List<CardUI> nextHandUI = new List<CardUI>();
             List<CardUI> pool = new List<CardUI>(playerHandUI);
 
             for (int i = 0; i < myHand.Count; i++)
             {
                 CardInfo targetData = myHand[i];
-                // 既存のオブジェクトからデータが一致するものを探す
                 CardUI existing = pool.Find(ui => ui != null && 
                                                  ui.CardInfo.SuitInt == targetData.SuitInt && 
                                                  ui.CardInfo.Rank == targetData.Rank);
@@ -657,12 +640,10 @@ private void UpdateOpponentsUI()
                 {
                     nextHandUI.Add(existing);
                     pool.Remove(existing);
-                    // データの再セットアップ（念のため）
                     existing.SetupFusion(targetData, true);
                 }
                 else
                 {
-                    // 見つからなければ新規生成
                     GameObject go = Instantiate(cardPrefab, handVisualParent);
                     CardUI ui = go.GetComponent<CardUI>();
                     ui.SetupFusion(targetData, true);
@@ -675,7 +656,6 @@ private void UpdateOpponentsUI()
                 }
             }
 
-            // 余ったオブジェクト（手札から消えたカード）を破壊
             foreach (var remaining in pool)
             {
                 if (remaining != null) Destroy(remaining.gameObject);
@@ -683,21 +663,14 @@ private void UpdateOpponentsUI()
 
             playerHandUI = nextHandUI;
 
-            // 実体の階層順序をリスト（データの並び）と一致させる
-            // リストの先頭（左側）から順に「最前面に送る」を繰り返すことで、
-            // リストの最後（右側）のカードが物理的に最前面（SiblingIndex最大）になることを保証する
             for (int i = 0; i < playerHandUI.Count; i++)
             {
                 if (playerHandUI[i] != null)
                 {
-                    // ドラッグ中以外のカードは親を確認し、必要なら handVisualParent に戻す
-                    // （ドラッグ終了直後のカードを確実にリスト順の管理に含めるため）
                     if (!playerHandUI[i].IsDragging && (playerHandUI[i].transform.parent != handVisualParent))
                     {
                         playerHandUI[i].transform.SetParent(handVisualParent, true);
                     }
-                    
-                    // 親が handVisualParent にある場合のみ最前面へ（順次重ねていく）
                     if (playerHandUI[i].transform.parent == handVisualParent)
                     {
                         playerHandUI[i].transform.SetAsLastSibling();
@@ -705,44 +678,36 @@ private void UpdateOpponentsUI()
                 }
             }
 
-            // 4. レイアウト確定後に移動
             if (applyHandPositionsCoroutine != null) StopCoroutine(applyHandPositionsCoroutine);
             applyHandPositionsCoroutine = StartCoroutine(ApplyHandPositionsAfterLayout());
         }
 
         private System.Collections.IEnumerator ApplyHandPositionsAfterLayout()
         {
-            yield return null; // レイアウト確定を待つ
+            yield return null;
             Canvas.ForceUpdateCanvases();
 
-            // 扇状配置の計算（プレイヤー自身なのでカーブはなだらかに設定）
             int count = playerHandUI.Count;
-            float fanAngleSpan = Mathf.Min(count * 5f, 30f); 
+            float fanAngleSpan = Mathf.Min(count * 6f, 45f); // Increased from 5f/30f to spread more
             float startAngle = fanAngleSpan / 2f;
             float angleStep = count > 1 ? fanAngleSpan / (count - 1) : 0f;
-            float radius = 500f; // 大きな円弧
+            float radius = 800f; // Increased from 500f for a gentler curve
 
             for (int i = 0; i < playerHandUI.Count; i++)
             {
                 if (i < dummySlots.Count && dummySlots[i] != null)
                 {
-                    // ドラッグ中のカードはレイアウト計算から除外して飛ばさない
                     if (!playerHandUI[i].IsDragging)
                     {
                         Vector3 basePos = dummySlots[i].transform.position;
-                        
-                        // 傾きとY軸の沈み込みを計算
                         float currentAngle = startAngle - (i * angleStep);
                         float rad = currentAngle * Mathf.Deg2Rad;
                         float yOffsetLocal = Mathf.Cos(rad) * radius - radius;
-                        
-                        // キャンバススケールをかけてワールド空間オフセットに変換（親コンテナのスケールを利用）
                         float yOffsetWorld = 0f;
                         if (playerHandContainer != null) {
                             yOffsetWorld = yOffsetLocal * playerHandContainer.lossyScale.y;
                         }
 
-                        // カーブと回転を同時に滑らかにアニメーションさせる
                         if (playerHandUI[i] != null) {
                             playerHandUI[i].SmoothMoveAndRotateTo(
                                 basePos + new Vector3(0, yOffsetWorld, 0),
@@ -754,18 +719,39 @@ private void UpdateOpponentsUI()
             }
         }
 
+        private float CalcSlotWidth(int cardCount)
+        {
+            const float containerWidth = 950f; // Increased from 700f to utilize ~80% of width
+            const float cardVisualWidth = 100f;
+            const float maxSlotWidth = 180f; // Increased from 160f for more space with few cards
+            const float minSlotWidth = 65f; // Slightly increased from 55f
+            if (cardCount <= 1) return maxSlotWidth;
+            float neededWidth = (containerWidth - cardVisualWidth) / (cardCount - 1);
+            return Mathf.Clamp(neededWidth, minSlotWidth, maxSlotWidth);
+        }
+
+        private void RefreshSlotWidths(float slotWidth)
+        {
+            foreach (var d in dummySlots)
+            {
+                if (d != null)
+                {
+                    var le = d.GetComponent<LayoutElement>();
+                    if (le != null) { le.preferredWidth = slotWidth; le.minWidth = slotWidth; }
+                }
+            }
+        }
+
+
         private System.Collections.IEnumerator DealCardsAnimationCoroutine(List<CardInfo> handToDeal)
         {
             isDealingAnimationRunning = true;
-
-            // コンテナを一旦クリア（"DummySlot"など一時的なものはクリアするが、他のオブジェクトがある場合は注意。現在は Hand 限定なので全破棄でOK）
             foreach (Transform child in playerHandContainer) Destroy(child.gameObject);
             playerHandUI.Clear();
 
             List<CardUI> animatingCards = new List<CardUI>();
-            List<GameObject> dummySlots = new List<GameObject>();
+            List<GameObject> tempDummySlots = new List<GameObject>();
 
-            // 1. まず「透明なダミーの枠」を必要枚数分 LayoutGroup (playerHandContainer) に追加してレイアウトを確定させる
             for (int i = 0; i < handToDeal.Count; i++)
             {
                 GameObject dummyObj = new GameObject("DummySlot", typeof(RectTransform), typeof(LayoutElement));
@@ -773,36 +759,27 @@ private void UpdateOpponentsUI()
                 LayoutElement le = dummyObj.GetComponent<LayoutElement>();
                 le.preferredWidth = 100f;
                 le.preferredHeight = 140f;
-                dummySlots.Add(dummyObj);
+                tempDummySlots.Add(dummyObj);
             }
 
-            // レイアウトが計算されるまで数フレーム待機
             yield return null;
             yield return null;
             Canvas.ForceUpdateCanvases();
 
-            // 2. 実際のカード画像を DeckPileContainer (山札) の位置から生成し、 Canvas 直下等の自由移動可能な階層へ
             Transform canvasTransform = playerHandContainer.GetComponentInParent<Canvas>().transform;
             
             for (int i = 0; i < handToDeal.Count; i++)
             {
                 GameObject go = Instantiate(cardPrefab, canvasTransform);
                 CardUI ui = go.GetComponent<CardUI>();
-                
-                // 初めは裏面で表示
                 ui.SetupFusion(handToDeal[i], false); 
-                
-                // 初期位置は山札。Screen/World Spaceどちらでも対応できるよう山札のpositionをそのまま使用
                 Vector3 startPos = deckPileContainer.position;
                 ui.transform.position = startPos;
                 ui.transform.localScale = Vector3.one;
-                
-                // クリック判定をアニメーション中は無効化しておく
                 if (ui.button != null) ui.button.interactable = false;
-                
                 animatingCards.Add(ui);
 
-                float duration = 0.25f; // 1枚あたり0.25秒で移動
+                float duration = 0.25f;
                 float elapsed = 0f;
 
                 while (elapsed < duration)
@@ -811,42 +788,28 @@ private void UpdateOpponentsUI()
                     float t = elapsed / duration;
                     float easeOutT = 1f - Mathf.Pow(1f - t, 3f);
 
-                    if (dummySlots[i] != null)
+                    if (tempDummySlots[i] != null)
                     {
-                        Vector3 targetPos = dummySlots[i].transform.position;
+                        Vector3 targetPos = tempDummySlots[i].transform.position;
                         ui.transform.position = Vector3.Lerp(startPos, targetPos, easeOutT);
                     }
 
-                    // 移動の後半で表面にフリップする演出(簡易的)
                     if (t > 0.5f && ui.cardImage.sprite == cardDatabase.GetCardBack())
                     {
-                        ui.SetupFusion(handToDeal[i], true); // 表面にする
+                        ui.SetupFusion(handToDeal[i], true);
                     }
-
                     yield return null;
                 }
 
-                if (dummySlots[i] != null)
-                {
-                    ui.transform.position = dummySlots[i].transform.position;
-                }
+                if (tempDummySlots[i] != null) ui.transform.position = tempDummySlots[i].transform.position;
                 ui.SetupFusion(handToDeal[i], true);
-
-                // 次のカードへ移る前に少し待つ
                 yield return new WaitForSeconds(0.1f);
             }
 
-            // 3. アニメーションがすべて完了したら、ダミーと一時カードを破棄し、本来のUIへ確実に入れ替える
-            foreach (var d in dummySlots) {
-                if (d != null) Destroy(d);
-            }
-            foreach (var c in animatingCards) {
-                if (c != null) Destroy(c.gameObject);
-            }
+            foreach (var d in tempDummySlots) { if (d != null) Destroy(d); }
+            foreach (var c in animatingCards) { if (c != null) Destroy(c.gameObject); }
 
             isDealingAnimationRunning = false;
-
-            // 本来の表示処理を呼び出して、レイアウトやイベントが完全に正常な状態を再構築する
             UpdateFusionHandUI(true);
         }
 
@@ -858,11 +821,10 @@ private void UpdateOpponentsUI()
             while (pendingDrawAnimations.Count > 0)
             {
                 CardInfo cardToAnimate = pendingDrawAnimations.Dequeue();
-                inFlightAnimationCount++; // Dequeue後, playerHandUI.Add前の「宙ぶらりん」をカウント
+                inFlightAnimationCount++;
 
                 if (deckPileContainer == null) { inFlightAnimationCount--; break; }
 
-                // 1. ダミースロットを1つ作成してレイアウトを確保
                 GameObject dummyObj = new GameObject("DummySlot", typeof(RectTransform), typeof(LayoutElement));
                 dummyObj.transform.SetParent(playerHandContainer, false);
                 LayoutElement le = dummyObj.GetComponent<LayoutElement>();
@@ -874,12 +836,9 @@ private void UpdateOpponentsUI()
                 Canvas.ForceUpdateCanvases();
 
                 Transform canvasTransform = playerHandContainer.GetComponentInParent<Canvas>().transform;
-
-                // 2. カードを生成してアニメーション
                 GameObject go = Instantiate(cardPrefab, canvasTransform);
                 CardUI ui = go.GetComponent<CardUI>();
                 ui.SetupFusion(cardToAnimate, false);
-
                 Vector3 startPos = deckPileContainer.position;
                 ui.transform.position = startPos;
                 ui.transform.localScale = Vector3.one;
@@ -893,40 +852,19 @@ private void UpdateOpponentsUI()
                     elapsed += Time.deltaTime;
                     float t = elapsed / duration;
                     float easeOutT = 1f - Mathf.Pow(1f - t, 3f);
-
-                    if (dummyObj != null)
-                    {
-                        Vector3 targetPos = dummyObj.transform.position;
-                        ui.transform.position = Vector3.Lerp(startPos, targetPos, easeOutT);
-                    }
-
-                    if (t > 0.5f && ui.cardImage.sprite == cardDatabase.GetCardBack())
-                    {
-                        ui.SetupFusion(cardToAnimate, true);
-                    }
-
+                    if (dummyObj != null) ui.transform.position = Vector3.Lerp(startPos, dummyObj.transform.position, easeOutT);
+                    if (t > 0.5f && ui.cardImage.sprite == cardDatabase.GetCardBack()) ui.SetupFusion(cardToAnimate, true);
                     yield return null;
                 }
 
-                if (dummyObj != null) ui.transform.position = dummyObj.transform.position;
-                ui.SetupFusion(cardToAnimate, true);
-                if (ui.button != null) ui.button.interactable = true;
-
-                // 3. 後片付け:
-                //    dummyObj（レイアウト確保用の枠）は破棄
-                //    go（アニメーション用）は handVisualParent に「引き渡す」（破棄しない）
                 if (dummyObj != null) Destroy(dummyObj);
-                playerHandUI.Add(ui); // 手札管理リストに追加
-                
-                // カードを追加したら、とりあえず最前面にしておく
+                playerHandUI.Add(ui);
                 ui.transform.SetAsLastSibling();
-
-                inFlightAnimationCount--; // アニメーション終了
-                yield return new WaitForSeconds(0.1f); // 各カード間のインターバル
+                inFlightAnimationCount--;
+                yield return new WaitForSeconds(0.1f);
             }
 
             isDealingAnimationRunning = false;
-            // アニメーション完了後、全体の重なり順を確定させるために強制更新
             UpdateFusionHandUI(true);
         }
 
@@ -936,22 +874,12 @@ private void UpdateOpponentsUI()
         {
             var fm = DonFusionManager2D.Instance;
             if (fm == null || fm.Runner == null) return;
-            
-            // 自分のアクションなら何もしない（自機はドラッグ＆ドロップで即時反映されるため）
             if (fm.GetActorId(fm.Runner.LocalPlayer) == actorId) return;
-
-            // 誰が出したかを探す
             opponentUIs.TryGetValue(actorId, out OpponentUIInfo targetOpponent);
             if (targetOpponent != null)
             {
-                Debug.Log($"[Anim] PlayOpponentCardAnimation: Actor {actorId} plays {card.Suit}_{card.Rank}");
-                // アニメーション開始前にフラグを立て、UpdateOpponentsUI()での手札枚数更新を抑制する
                 opponentAnimatingFlags[actorId] = true;
                 StartCoroutine(OpponentPlayAnimationCoroutine(actorId, targetOpponent.transform.position, card));
-            }
-            else
-            {
-                Debug.LogWarning($"[Anim] OpponentUIInfo not found for Actor {actorId}!");
             }
         }
 
@@ -959,24 +887,17 @@ private void UpdateOpponentsUI()
         {
             isOpponentCardAnimationRunning = true;
             pendingDiscardCard = default;
-            
-            // キャンバス直下にアニメーション用の一時カードを生成
             Transform canvasTransform = discardPileContainer.GetComponentInParent<Canvas>().transform;
             GameObject go = Instantiate(cardPrefab, canvasTransform);
-            
-            // 一番手前に表示
             go.transform.SetAsLastSibling();
-
             CardUI ui = go.GetComponent<CardUI>();
-            ui.SetupFusion(card, true); // 表面で飛ばす
+            ui.SetupFusion(card, true);
             ui.transform.position = startPos;
             ui.transform.localScale = Vector3.one;
 
-            // アニメーション
             float duration = 0.3f;
             float elapsed = 0f;
             Vector3 targetPos = discardPileContainer.position;
-
             while (elapsed < duration)
             {
                 elapsed += Time.deltaTime;
@@ -986,22 +907,14 @@ private void UpdateOpponentsUI()
                 yield return null;
             }
 
-            // 到着後に破棄（実際の捨て札UIはRPC_NotifyDiscardChangedによって別途更新される）
             Destroy(go);
-            
-            // アニメーション完了 → フラグを解除し、保留していた手札枚数を反映する
             isOpponentCardAnimationRunning = false;
             opponentAnimatingFlags[actorId] = false;
-
-            // アニメーション中に保留されていた手札枚数を今すぐ反映する
-            if (pendingOpponentHandCounts.TryGetValue(actorId, out int pendingCount) &&
-                opponentUIs.TryGetValue(actorId, out OpponentUIInfo opUI))
+            if (pendingOpponentHandCounts.TryGetValue(actorId, out int pendingCount) && opponentUIs.TryGetValue(actorId, out OpponentUIInfo opUI))
             {
                 opUI.Setup(actorId, pendingCount, pendingCount == 1);
                 pendingOpponentHandCounts.Remove(actorId);
             }
-
-            // 保留していた捨て札を今すぐ反映する
             if (pendingDiscardCard.Rank != 0)
             {
                 OnDiscardPileChanged(pendingDiscardCard);
@@ -1013,58 +926,33 @@ private void UpdateOpponentsUI()
         {
             var fm = DonFusionManager2D.Instance;
             if (fm == null || fm.Runner == null) return;
-            
             if (fm.GetActorId(fm.Runner.LocalPlayer) == actorId) return;
-
             opponentUIs.TryGetValue(actorId, out OpponentUIInfo targetOpponent);
             if (targetOpponent != null)
             {
-                Debug.Log($"[Anim] PlayOpponentDrawAnimation: Actor {actorId} draws {count} cards");
-                // アニメーション開始前にフラグを立て、UpdateOpponentsUI()での手札枚数更新を抑制する
                 opponentAnimatingFlags[actorId] = true;
                 StartCoroutine(OpponentDrawAnimationCoroutine(actorId, targetOpponent.transform.position, count));
-            }
-            else
-            {
-                Debug.LogWarning($"[Anim] OpponentUIInfo not found for Actor {actorId}!");
             }
         }
 
         private System.Collections.IEnumerator OpponentDrawAnimationCoroutine(int actorId, Vector3 targetPos, int count)
         {
             Transform canvasTransform = discardPileContainer.GetComponentInParent<Canvas>().transform;
-            Vector3 startPos = deckPileContainer.position; // 山札から出発
-
-            // 最後のカードのアニメーション完了を待つために自前でトラッキングする
-            float lastCardDuration = 0.3f;
-            float lastCardDelay = (count - 1) * 0.1f; // 最後のカードが発射されるまでの遅延
-
+            Vector3 startPos = deckPileContainer.position;
             for (int i = 0; i < count; i++)
             {
                 GameObject go = Instantiate(cardPrefab, canvasTransform);
                 go.transform.SetAsLastSibling();
-
                 CardUI ui = go.GetComponent<CardUI>();
-                // ドロー時は裏面
-                ui.SetupFusion(new CardInfo(Suit.Hearts, 1), false); // ダミーデータで裏面生成
+                ui.SetupFusion(new CardInfo(Suit.Hearts, 1), false);
                 ui.transform.position = startPos;
                 ui.transform.localScale = Vector3.one;
-
                 StartCoroutine(AnimateSingleOpponentDraw(go, startPos, targetPos));
-
-                // 複数枚ある場合は少しずらして発射
                 yield return new WaitForSeconds(0.1f);
             }
-
-            // 最後のカードのアニメーション（0.3秒）が完了するまで待機
-            yield return new WaitForSeconds(lastCardDuration);
-
-            // 全アニメーション完了 → フラグを解除し、保留していた手札枚数を反映する
+            yield return new WaitForSeconds(0.3f);
             opponentAnimatingFlags[actorId] = false;
-
-            // アニメーション中に保留されていた手札枚数を今すぐ反映する
-            if (pendingOpponentHandCounts.TryGetValue(actorId, out int pendingCount) &&
-                opponentUIs.TryGetValue(actorId, out OpponentUIInfo opUI))
+            if (pendingOpponentHandCounts.TryGetValue(actorId, out int pendingCount) && opponentUIs.TryGetValue(actorId, out OpponentUIInfo opUI))
             {
                 opUI.Setup(actorId, pendingCount, pendingCount == 1);
                 pendingOpponentHandCounts.Remove(actorId);
@@ -1075,7 +963,6 @@ private void UpdateOpponentsUI()
         {
             float duration = 0.3f;
             float elapsed = 0f;
-
             while (elapsed < duration && cardObj != null)
             {
                 elapsed += Time.deltaTime;
@@ -1084,11 +971,7 @@ private void UpdateOpponentsUI()
                 cardObj.transform.position = Vector3.Lerp(start, target, easeOutT);
                 yield return null;
             }
-
-            if (cardObj != null)
-            {
-                Destroy(cardObj);
-            }
+            if (cardObj != null) Destroy(cardObj);
         }
 
         #endregion
@@ -1096,171 +979,65 @@ private void UpdateOpponentsUI()
         private int lastDiscardPileCount = -1;
         private Suit lastTopCardSuit = (Suit)(-1);
         private int lastTopCardRank = -1;
-        
         private bool isLocalPlayerDiscarding = false;
-
-        public void SetLocalPlayerDiscarding(bool value)
-        {
-            isLocalPlayerDiscarding = value;
-        }
-private int lastActiveSuitInt = -1;
-        
-        // 相手のカード提出アニメーション実行中フラグ
+        public void SetLocalPlayerDiscarding(bool value) => isLocalPlayerDiscarding = value;
+        private int lastActiveSuitInt = -1;
         private bool isOpponentCardAnimationRunning = false;
-        private CardInfo pendingDiscardCard = default;  // アニメーション完了待ちの捨て札情報
-
-        // 各相手アクターのアニメーション実行中フラグ（actorId → true=アニメーション中）
-        // アニメーション完了前に手札枚数UIが更新されないようにするための制御用
+        private CardInfo pendingDiscardCard = default;
         private Dictionary<int, bool> opponentAnimatingFlags = new Dictionary<int, bool>();
-        // アニメーション完了後に反映すべき手札枚数（actorId → 枚数）
         private Dictionary<int, int> pendingOpponentHandCounts = new Dictionary<int, int>();
 
-        /// <summary>
-        /// DonFusionManager2D から RPC 経由で呼ばれる捨て札通知。
-        /// NetworkArray の同期遅延にかかわらず、捨て札UIを必ず更新する。
-        /// </summary>
-public void OnDiscardPileChanged(DonGame2D.Models.CardInfo topCard)
+        public void OnDiscardPileChanged(CardInfo topCard)
         {
             if (topCard.Rank == 0) return;
-            
-            // アニメーション実行中は更新を延龐する
-            if (isOpponentCardAnimationRunning)
-            {
-                pendingDiscardCard = topCard;
-                return;
-            }
-
+            if (isOpponentCardAnimationRunning) { pendingDiscardCard = topCard; return; }
             CardUI ui = null;
             if (discardPileContainer != null && discardPileContainer.childCount > 0)
             {
-                // Donボタン以外の先頭の子を検索
-                foreach (Transform child in discardPileContainer)
-                {
-                    if (discardDonButton != null && child.gameObject == discardDonButton.gameObject) continue;
-                    ui = child.GetComponent<CardUI>();
-                    break;
-                }
+                foreach (Transform child in discardPileContainer) { if (discardDonButton != null && child.gameObject == discardDonButton.gameObject) continue; ui = child.GetComponent<CardUI>(); break; }
             }
-
             if (ui == null || ui.gameObject.name != "DiscardPileCard")
             {
                 if (discardPileContainer != null)
                 {
-                    // Donボタン以外の子を全除去
-                    foreach (Transform child in discardPileContainer)
-                    {
-                        if (discardDonButton != null && child.gameObject == discardDonButton.gameObject) continue;
-                        Destroy(child.gameObject);
-                    }
+                    foreach (Transform child in discardPileContainer) { if (discardDonButton != null && child.gameObject == discardDonButton.gameObject) continue; Destroy(child.gameObject); }
                     GameObject go = Instantiate(cardPrefab, discardPileContainer);
-                    go.name = "DiscardPileCard";
-                    go.transform.SetAsFirstSibling(); // Donボタンの手前に配置
-                    ui = go.GetComponent<CardUI>();
-                    lastDiscardPileCount = -1;
+                    go.name = "DiscardPileCard"; go.transform.SetAsFirstSibling(); ui = go.GetComponent<CardUI>(); lastDiscardPileCount = -1;
                 }
             }
-
             if (ui != null)
             {
-                ui.transform.localPosition = Vector3.zero;
-                ui.isDiscarded = true;
-                ui.SetupFusion(topCard, true);
-
+                ui.transform.localPosition = Vector3.zero; ui.isDiscarded = true; ui.SetupFusion(topCard, true);
                 var fm = DonFusionManager2D.Instance;
-                if (fm != null)
-                {
-                    lastDiscardPileCount = fm.DiscardCount;
-                    lastTopCardSuit = topCard.Suit;
-                    lastTopCardRank = topCard.Rank;
-                    lastActiveSuitInt = fm.ActiveSuitInt;
-                }
+                if (fm != null) { lastDiscardPileCount = fm.DiscardCount; lastTopCardSuit = topCard.Suit; lastTopCardRank = topCard.Rank; lastActiveSuitInt = fm.ActiveSuitInt; }
             }
         }
 
-        
-
-                    private void UpdateFusionDiscardPileUI()
+        private void UpdateFusionDiscardPileUI()
         {
-            // 相手のカード提出アニメーション実行中は、ポーリングによる即時更新を停止する
             if (isOpponentCardAnimationRunning) return;
-
             var fm = DonFusionManager2D.Instance;
             if (fm.DiscardCount > 0)
             {
                 var topCard = fm.DiscardPile.Get(fm.DiscardCount - 1);
-
-                if (topCard.Rank == 0)
-                {
-                    lastDiscardPileCount = -1;
-                    return;
-                }
-
+                if (topCard.Rank == 0) { lastDiscardPileCount = -1; return; }
                 CardUI ui = null;
-                if (discardPileContainer.childCount > 0)
-                {
-                    // Donボタン以外の先頭の子を検索
-                    foreach (Transform child in discardPileContainer)
-                    {
-                        if (discardDonButton != null && child.gameObject == discardDonButton.gameObject) continue;
-                        ui = child.GetComponent<CardUI>();
-                        break;
-                    }
-                }
-
-                if (ui == null || ui.gameObject.name != "DiscardPileCard")
-                {
-                    // Donボタン以外の子を全除去して再生成
-                    foreach (Transform child in discardPileContainer)
-                    {
-                        if (discardDonButton != null && child.gameObject == discardDonButton.gameObject) continue;
-                        Destroy(child.gameObject);
-                    }
-
-                    GameObject go = Instantiate(cardPrefab, discardPileContainer);
-                    go.name = "DiscardPileCard";
-                    // Donボタンの手前に持ってくる（常に最前列をキープ）
-                    go.transform.SetAsFirstSibling();
-                    ui = go.GetComponent<CardUI>();
-                    lastDiscardPileCount = -1;
-                }
-
+                if (discardPileContainer.childCount > 0) { foreach (Transform child in discardPileContainer) { if (discardDonButton != null && child.gameObject == discardDonButton.gameObject) continue; ui = child.GetComponent<CardUI>(); break; } }
+                if (ui == null || ui.gameObject.name != "DiscardPileCard") { foreach (Transform child in discardPileContainer) { if (discardDonButton != null && child.gameObject == discardDonButton.gameObject) continue; Destroy(child.gameObject); } GameObject go = Instantiate(cardPrefab, discardPileContainer); go.name = "DiscardPileCard"; go.transform.SetAsFirstSibling(); ui = go.GetComponent<CardUI>(); lastDiscardPileCount = -1; }
                 bool cardChanged = (fm.DiscardCount != lastDiscardPileCount || topCard.Suit != lastTopCardSuit || topCard.Rank != lastTopCardRank);
                 bool activeSuitChanged = (fm.ActiveSuitInt != lastActiveSuitInt);
-
                 if (cardChanged || activeSuitChanged)
                 {
-                    ui.transform.localPosition = Vector3.zero;
-                    ui.isDiscarded = true;
-
-                    if (cardChanged)
-                    {
-                        ui.SetupFusion(topCard, true);
-                    }
-                    else if (activeSuitChanged && topCard.Rank == 8 && fm.ActiveSuitInt != -1)
-                    {
-                        Sprite newSprite = ui.database.GetCardSprite((Suit)fm.ActiveSuitInt, 8);
-                        if (newSprite != null)
-                        {
-                            ui.ChangeSpriteWithFade(newSprite, 0.5f);
-                        }
-                    }
-
-                    lastDiscardPileCount = fm.DiscardCount;
-                    lastTopCardSuit = topCard.Suit;
-                    lastTopCardRank = topCard.Rank;
-                    lastActiveSuitInt = fm.ActiveSuitInt;
+                    ui.transform.localPosition = Vector3.zero; ui.isDiscarded = true;
+                    if (cardChanged) ui.SetupFusion(topCard, true);
+                    else if (activeSuitChanged && topCard.Rank == 8 && fm.ActiveSuitInt != -1) { Sprite newSprite = ui.database.GetCardSprite((Suit)fm.ActiveSuitInt, 8); if (newSprite != null) ui.ChangeSpriteWithFade(newSprite, 0.5f); }
+                    lastDiscardPileCount = fm.DiscardCount; lastTopCardSuit = topCard.Suit; lastTopCardRank = topCard.Rank; lastActiveSuitInt = fm.ActiveSuitInt;
                 }
             }
             else
             {
-                // Donボタン以外の子を破棄
-                foreach (Transform child in discardPileContainer)
-                {
-                    if (discardDonButton != null && child.gameObject == discardDonButton.gameObject) continue;
-                    Destroy(child.gameObject);
-                }
-                lastDiscardPileCount = -1;
-                lastActiveSuitInt = -1;
+                foreach (Transform child in discardPileContainer) { if (discardDonButton != null && child.gameObject == discardDonButton.gameObject) continue; Destroy(child.gameObject); }
+                lastDiscardPileCount = -1; lastActiveSuitInt = -1;
             }
         }
 
@@ -1268,28 +1045,15 @@ public void OnDiscardPileChanged(DonGame2D.Models.CardInfo topCard)
         {
             DonPlayer localPlayer = DonGameManager.Instance.players[0];
             bool isMyTurn = DonGameManager.Instance.currentPlayerIndex == 0;
-
             statusText.text = isMyTurn ? "Your Turn" : $"{DonGameManager.Instance.players[DonGameManager.Instance.currentPlayerIndex].name}'s Turn";
             penaltyText.text = $"RD 1/5 | {localPlayer.credits} Credits";
             if (DonGameManager.Instance.drawPenaltyCount > 0) penaltyText.text += $" | Penalty: +{DonGameManager.Instance.drawPenaltyCount}";
-
             drawButton.interactable = isMyTurn && !DonGameManager.Instance.isRoundOver;
-
             Card top = DonGameManager.Instance.GetTopDiscard();
             donButton.interactable = !DonGameManager.Instance.isRoundOver && top != null && localPlayer.GetHandTotal() == top.rank && localPlayer.GetHandTotal() <= 13;
-
-            UpdateHandUI(localPlayer);
-            UpdateDiscardPileUI();
-
-            if (DonGameManager.Instance.isRoundOver)
-            {
-                resultPanel.SetActive(true);
-                resultText.text = "Round Finished!\nCheck console for scores.";
-            }
-            else
-            {
-                resultPanel.SetActive(false);
-            }
+            UpdateHandUI(localPlayer); UpdateDiscardPileUI();
+            if (DonGameManager.Instance.isRoundOver) { resultPanel.SetActive(true); resultText.text = "Round Finished!\nCheck console for scores."; }
+            else resultPanel.SetActive(false);
         }
 
         private void UpdateHandUI(DonPlayer player)
@@ -1298,71 +1062,44 @@ public void OnDiscardPileChanged(DonGame2D.Models.CardInfo topCard)
             {
                 foreach (Transform child in playerHandContainer) Destroy(child.gameObject);
                 playerHandUI.Clear();
-
-                foreach (var card in player.hand)
-                {
-                    GameObject go = Instantiate(cardPrefab, playerHandContainer);
-                    CardUI ui = go.GetComponent<CardUI>();
-                    ui.Setup(card, true);
-                    playerHandUI.Add(ui);
-                }
+                foreach (var card in player.hand) { GameObject go = Instantiate(cardPrefab, playerHandContainer); CardUI ui = go.GetComponent<CardUI>(); ui.Setup(card, true); playerHandUI.Add(ui); }
             }
         }
 
-        public void ShowReach(int actorId)
-        {
-            temporaryNotification = $"PLAYER {actorId}: REACH!!!";
-            notificationTimer = 4.0f; // 4秒間表示
-        }
+        public void ShowReach(int actorId) { temporaryNotification = $"PLAYER {actorId}: REACH!!!"; notificationTimer = 4.0f; }
 
         public void ShowRoundResult(string msg, bool isFinal)
         {
             if (resultPanel == null || resultText == null) return;
-
-            resultText.text = msg;
-            resultPanel.SetActive(true);
-
-            // リザルトパネルに「次へ」ボタンがある場合はテキストを変えるなどの演出が可能
+            resultText.text = msg; resultPanel.SetActive(true);
             var btn = resultPanel.GetComponentInChildren<Button>();
             if (btn != null)
             {
                 var btnText = btn.GetComponentInChildren<Text>();
                 if (btnText != null) btnText.text = isFinal ? "GAME OVER (EXIT)" : "START NEXT ROUND";
-                
                 btn.onClick.RemoveAllListeners();
                 btn.onClick.AddListener(() => {
-                    if (useFusion && DonFusionManager2D.Instance != null)
-                    {
-                        if (isFinal)
-                        {
-                            // 終了処理（タイトルへ戻る等）
-                            UnityEngine.SceneManagement.SceneManager.LoadScene(UnityEngine.SceneManagement.SceneManager.GetActiveScene().name);
-                        }
-                        else
-                        {
-                            DonFusionManager2D.Instance.RPC_RequestNextRound();
-                            resultPanel.SetActive(false);
-                            
-                            // アニメーション用の中央コンテナをクリア
-                            if (revealedHandContainer != null)
-                            {
-                                foreach (Transform child in revealedHandContainer)
-                                    Destroy(child.gameObject);
-                            }
-                        }
+                    if (useFusion && DonFusionManager2D.Instance != null) {
+                        if (isFinal) UnityEngine.SceneManagement.SceneManager.LoadScene(UnityEngine.SceneManagement.SceneManager.GetActiveScene().name);
+                        else { DonFusionManager2D.Instance.RPC_RequestNextRound(); resultPanel.SetActive(false); if (revealedHandContainer != null) foreach (Transform child in revealedHandContainer) Destroy(child.gameObject); }
                     }
                 });
             }
         }
 
-        public void PlayRoundEndAnimation(int winType, int winnerId, int loserId, int donValue, string loserHandStr, int totalPenalty, string resultMsg, bool isFinal)
+        public void PlayRoundEndAnimation(int winType, int winnerId, int loserId, int donValue, string loserHandStr, int totalPenalty, string resultMsg, bool isFinal, string winnerNames = "")
         {
-            var animCtrl = GetComponent<ScoreAnimationController>();
-            if (animCtrl == null) animCtrl = gameObject.AddComponent<ScoreAnimationController>();
-            
-            animCtrl.uiController = this;
-            animCtrl.PlayWinAnimation(winType, winnerId, loserId, donValue, loserHandStr, totalPenalty, resultMsg, isFinal);
+            if (scoreAnimationController != null) scoreAnimationController.PlayRoundEndAnimation(winType, winnerId, loserId, donValue, loserHandStr, totalPenalty, resultMsg, isFinal, winnerNames);
+            else { var animCtrl = GetComponent<ScoreAnimationController>(); if (animCtrl == null) animCtrl = gameObject.AddComponent<ScoreAnimationController>(); animCtrl.uiController = this; animCtrl.PlayRoundEndAnimation(winType, winnerId, loserId, donValue, loserHandStr, totalPenalty, resultMsg, isFinal, winnerNames); }
         }
+
+        public void ClearHandUI(int actorId)
+        {
+            if (actorId == GetLocalActorId()) { foreach (var cUI in playerHandUI) if (cUI != null) Destroy(cUI.gameObject); playerHandUI.Clear(); foreach (var d in dummySlots) if (d != null) Destroy(d); dummySlots.Clear(); }
+            else if (opponentUIs.TryGetValue(actorId, out var info) && info.cardIconContainer != null) foreach (Transform child in info.cardIconContainer) Destroy(child.gameObject);
+        }
+
+        public void ShowDonAnimation(int actorId, string handData) => Debug.Log($"[UI] ShowDonAnimation actorId:{actorId}");
 
         private void UpdateDiscardPileUI()
         {
@@ -1370,94 +1107,37 @@ public void OnDiscardPileChanged(DonGame2D.Models.CardInfo topCard)
             Card topCard = DonGameManager.Instance.GetTopDiscard();
             if (topCard != null)
             {
-                CardUI ui = null;
-                if (discardPileContainer.childCount > 0)
-                {
-                    ui = discardPileContainer.GetChild(0).GetComponent<CardUI>();
-                }
-
-                if (ui == null || ui.gameObject.name != "DiscardPileCard")
-                {
-                    foreach (Transform child in discardPileContainer) Destroy(child.gameObject);
-                    GameObject go = Instantiate(cardPrefab, discardPileContainer);
-                    go.name = "DiscardPileCard";
-                    ui = go.GetComponent<CardUI>();
-                }
-
-                ui.transform.localPosition = Vector3.zero;
-                ui.isDiscarded = true;
-                ui.Setup(topCard, true);
+                CardUI ui = (discardPileContainer.childCount > 0) ? discardPileContainer.GetChild(0).GetComponent<CardUI>() : null;
+                if (ui == null || ui.gameObject.name != "DiscardPileCard") { foreach (Transform child in discardPileContainer) Destroy(child.gameObject); GameObject go = Instantiate(cardPrefab, discardPileContainer); go.name = "DiscardPileCard"; ui = go.GetComponent<CardUI>(); }
+                ui.transform.localPosition = Vector3.zero; ui.isDiscarded = true; ui.Setup(topCard, true);
             }
         }
-private void CreateContextDonButton()
+
+        private void CreateContextDonButton()
         {
-            // 1. まず既存の DonButton (元からシーンにある固定ボタン) を流用する
-            if (donButton != null)
-            {
-                discardDonButton = donButton;
-                Debug.Log("[Don] 既存の donButton を discardDonButton として流用します。");
-
-                // 捕れ札パネルの上部中央に移動する
-                var rt = discardDonButton.GetComponent<RectTransform>();
-                if (rt != null && discardPileContainer != null)
-                {
-                    discardDonButton.transform.SetParent(discardPileContainer, false);
-                    rt.anchorMin = new Vector2(0.5f, 1f);
-                    rt.anchorMax = new Vector2(0.5f, 1f);
-                    rt.pivot     = new Vector2(0.5f, 0.5f);
-                    rt.anchoredPosition = new Vector2(0, 80f);
-                    rt.sizeDelta = new Vector2(160, 60);
-                }
-                return;
-            }
-
-            // 2. donButton もない場合はコンテナから直接新規生成
-            Transform discardPile = discardPileContainer;
-            if (discardPile == null)
-            {
-                Debug.LogWarning("[Don] discardPileContainer が null のためボタンを作成できません。");
-                return;
-            }
-
-            var btnTrans = discardPile.Find("ContextDonButton");
-            GameObject btnObj;
-            if (btnTrans != null)
-            {
-                btnObj = btnTrans.gameObject;
-            }
-            else
-            {
-                btnObj = new GameObject("ContextDonButton", typeof(RectTransform), typeof(CanvasRenderer), typeof(Image), typeof(Button));
-                btnObj.transform.SetParent(discardPile, false);
-
-                var brt = btnObj.GetComponent<RectTransform>();
-                brt.anchorMin = new Vector2(0.5f, 1f);
-                brt.anchorMax = new Vector2(0.5f, 1f);
-                brt.pivot = new Vector2(0.5f, 0.5f);
-                brt.anchoredPosition = new Vector2(0, 80f);
-                brt.sizeDelta = new Vector2(160, 60);
-
-                var img = btnObj.GetComponent<Image>();
-                img.color = new Color(0.8f, 0.2f, 0.2f, 1f);
-
-                GameObject textObj = new GameObject("Text", typeof(RectTransform), typeof(CanvasRenderer), typeof(Text));
-                textObj.transform.SetParent(btnObj.transform, false);
-                var txt = textObj.GetComponent<Text>();
-                txt.text = "Don!";
-                txt.alignment = TextAnchor.MiddleCenter;
-                txt.fontSize = 28;
-                txt.color = Color.white;
-                txt.font = Resources.GetBuiltinResource<Font>("Arial.ttf");
-
-                var textRt = textObj.GetComponent<RectTransform>();
-                textRt.anchorMin = Vector2.zero;
-                textRt.anchorMax = Vector2.one;
-                textRt.offsetMin = Vector2.zero;
-                textRt.offsetMax = Vector2.zero;
-            }
-
+            if (donButton != null) { discardDonButton = donButton; var rt = discardDonButton.GetComponent<RectTransform>(); if (rt != null && discardPileContainer != null) { discardDonButton.transform.SetParent(discardPileContainer, false); rt.anchorMin = new Vector2(0.5f, 1f); rt.anchorMax = new Vector2(0.5f, 1f); rt.pivot = new Vector2(0.5f, 0.5f); rt.anchoredPosition = new Vector2(0, 80f); rt.sizeDelta = new Vector2(160, 60); } return; }
+            if (discardPileContainer == null) return;
+            var btnTrans = discardPileContainer.Find("ContextDonButton");
+            GameObject btnObj = (btnTrans != null) ? btnTrans.gameObject : null;
+            if (btnObj == null) { btnObj = new GameObject("ContextDonButton", typeof(RectTransform), typeof(CanvasRenderer), typeof(Image), typeof(Button)); btnObj.transform.SetParent(discardPileContainer, false); var brt = btnObj.GetComponent<RectTransform>(); brt.anchorMin = new Vector2(0.5f, 1f); brt.anchorMax = new Vector2(0.5f, 1f); brt.pivot = new Vector2(0.5f, 0.5f); brt.anchoredPosition = new Vector2(0, 80f); brt.sizeDelta = new Vector2(160, 60); var img = btnObj.GetComponent<Image>(); img.color = new Color(0.8f, 0.2f, 0.2f, 1f); GameObject textObj = new GameObject("Text", typeof(RectTransform), typeof(CanvasRenderer), typeof(Text)); textObj.transform.SetParent(btnObj.transform, false); var txt = textObj.GetComponent<Text>(); txt.text = "Don!"; txt.alignment = TextAnchor.MiddleCenter; txt.fontSize = 28; txt.color = Color.white; txt.font = Resources.GetBuiltinResource<Font>("Arial.ttf"); var textRt = textObj.GetComponent<Text>().GetComponent<RectTransform>(); textRt.anchorMin = Vector2.zero; textRt.anchorMax = Vector2.one; textRt.offsetMin = Vector2.zero; textRt.offsetMax = Vector2.zero; }
             discardDonButton = btnObj.GetComponent<Button>();
-            Debug.Log($"[Don] 新規 Don ボタンを作成しました: {discardDonButton != null}");
         }
+
+        public bool IsScatterAnimationRunning { get; set; } = false;
+        public System.Collections.IEnumerator Co_RecallScatteredCards(Vector3 targetPos) { while (IsScatterAnimationRunning) yield return null; }
+
+        public int GetLocalActorId()
+        {
+            var fm = DonFusionManager2D.Instance;
+            if (fm == null || fm.Runner == null) return -1;
+            var localObj = fm.Runner.GetPlayerObject(fm.Runner.LocalPlayer);
+            if (localObj != null) { var netObj = localObj.GetComponent<Fusion.NetworkObject>(); if (netObj != null) return netObj.StateAuthority.PlayerId; }
+            foreach (var ac in fm.Runner.ActivePlayers) { var fObj = fm.Runner.GetPlayerObject(ac); if (fObj != null && fObj.HasInputAuthority) return fObj.StateAuthority.PlayerId; }
+            return -1;
+        }
+        public List<CardUI> GetPlayerHandUI() => playerHandUI;
+        public void RemoveFromPlayerHandUI(CardUI card) => playerHandUI.Remove(card);
+        public Transform GetOpponentCardContainer(int actorId) => opponentUIs.TryGetValue(actorId, out var info) ? info.cardIconContainer : null;
+        public void PlayLocalDiscardAnimation(CardUI card, CardInfo cardInfo) { if (discardPileContainer != null && card != null) { card.transform.SetParent(discardPileContainer, true); card.transform.SetAsLastSibling(); } }
     }
 }

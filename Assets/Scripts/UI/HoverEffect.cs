@@ -20,7 +20,7 @@ public class HoverEffect : MonoBehaviour, IPointerEnterHandler, IPointerExitHand
     void Awake()
     {
         targetText = GetComponentInChildren<Text>();
-        originalScale = transform.localScale;
+        // originalScale = transform.localScale; // 削除
         if (targetText != null)
         {
             normalColor = targetText.color;
@@ -50,9 +50,7 @@ public class HoverEffect : MonoBehaviour, IPointerEnterHandler, IPointerExitHand
 
     private IEnumerator AnimateHover(float targetScaleFactor, Color targetColor)
     {
-        Vector3 startScale = transform.localScale;
-        Vector3 endScale = originalScale * targetScaleFactor;
-        
+        // 拡大アニメーションは完全に廃止
         Color startColor = Color.white;
         if (targetText != null) startColor = targetText.color;
 
@@ -61,11 +59,8 @@ public class HoverEffect : MonoBehaviour, IPointerEnterHandler, IPointerExitHand
         {
             elapsed += Time.deltaTime;
             float percent = elapsed / animationDuration;
-            
-            // Smooth step for nicer feel
             float smoothPercent = Mathf.SmoothStep(0, 1, percent);
 
-            transform.localScale = Vector3.Lerp(startScale, endScale, smoothPercent);
             if (targetText != null)
             {
                 targetText.color = Color.Lerp(startColor, targetColor, smoothPercent);
@@ -73,15 +68,13 @@ public class HoverEffect : MonoBehaviour, IPointerEnterHandler, IPointerExitHand
             yield return null;
         }
 
-        transform.localScale = endScale;
         if (targetText != null) targetText.color = targetColor;
     }
 
     void OnDisable()
     {
-        // Reset state when object is disabled to prevent sticking
         StopAnimation();
-        transform.localScale = originalScale;
+        // 拡大アニメーション廃止に伴いスケールの復元は行わない
         if (targetText != null) targetText.color = normalColor;
     }
 }

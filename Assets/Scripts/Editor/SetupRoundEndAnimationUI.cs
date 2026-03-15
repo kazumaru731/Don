@@ -104,15 +104,34 @@ public static class SetupRoundEndAnimationUI
             modified = true;
         }
 
+        // 3. ScoreAnimationController のアタッチと設定
+        ScoreAnimationController anim = uiController.GetComponent<ScoreAnimationController>();
+        if (anim == null)
+        {
+            anim = uiController.gameObject.AddComponent<ScoreAnimationController>();
+            anim.uiController = uiController;
+            uiController.scoreAnimationController = anim;
+            Debug.Log("Added and linked ScoreAnimationController to GameUIController.");
+            modified = true;
+        }
+        else if (uiController.scoreAnimationController == null || anim.uiController == null)
+        {
+            uiController.scoreAnimationController = anim;
+            anim.uiController = uiController;
+            Debug.Log("Linked existing ScoreAnimationController and GameUIController.");
+            modified = true;
+        }
+
         if (modified)
         {
             EditorUtility.SetDirty(uiController);
+            if (anim != null) EditorUtility.SetDirty(anim);
             UnityEditor.SceneManagement.EditorSceneManager.MarkSceneDirty(UnityEngine.SceneManagement.SceneManager.GetActiveScene());
-            Debug.Log("Round End Animation UI setup complete.");
+            Debug.Log("Round End Animation UI setup complete. Please save the scene.");
         }
         else
         {
-            Debug.Log("Round End Animation UI is already set up.");
+            Debug.Log("Round End Animation UI is already set up correctly.");
         }
     }
 }

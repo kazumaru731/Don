@@ -2,6 +2,7 @@ using UnityEngine;
 using UnityEditor;
 using UnityEngine.UI;
 using DonGame2D.UI;
+using System.Linq;
 
 /*
 [UnityEditor.InitializeOnLoad]
@@ -32,112 +33,126 @@ public class BuildCpuMatchUI
         }
 
         var titleController = Object.FindObjectOfType<TitleUIController>(true);
-        if (titleController == null)
-        {
-            Debug.LogError("TitleUIController not found in the scene.");
-            return;
-        }
+        if (titleController == null) return;
 
         GameObject titleCanvasObj = titleController.titleCanvasObj;
-        if (titleCanvasObj == null)
+        Transform buttonsContainer = titleCanvasObj.transform.Find("SafeAreaContainer");
+        if (buttonsContainer == null) buttonsContainer = titleCanvasObj.transform;
+
+        // --- 1. Spriteの準備 (既存のユーザー設定スライスを使用) ---
+        Sprite GetSprite(string path, int index)
         {
-            Debug.LogError("TitleCanvasObj is not set in TitleUIController.");
-            return;
+            // インポーターの設定を強制変更しないように修正
+            var allAssets = AssetDatabase.LoadAllAssetsAtPath(path);
+            var sprites = allAssets.OfType<Sprite>().OrderBy(s => s.name).ToArray();
+            
+            if (sprites.Length > index) return sprites[index];
+            
+            Debug.LogWarning($"[BuildUI] Sprite not found at {path} index {index}. Assets found: {allAssets.Length}");
+            return null;
         }
 
-        // 1. CPUマッチボタンの作成 (既存のボタンの並びに配置)
-        // Titleキャンバスのルートを探してボタンを追加
-        GameObject cpuMatchBtnObj = new GameObject("CpuMatchButton");
-        cpuMatchBtnObj.transform.SetParent(titleCanvasObj.transform, false);
-        var cpuMatchRect = cpuMatchBtnObj.AddComponent<RectTransform>();
-        cpuMatchRect.anchoredPosition = new Vector2(0, -90); // 既存ボタン（ランダム, フレンドなど）の下に配置
-        cpuMatchRect.sizeDelta = new Vector2(250, 60);
-
-        var cpuMatchImg = cpuMatchBtnObj.AddComponent<Image>();
-        cpuMatchImg.color = new Color(0.8f, 0.4f, 0.2f); // オレンジっぽくする
-        var cpuMatchBtn = cpuMatchBtnObj.AddComponent<Button>();
-        cpuMatchBtn.targetGraphic = cpuMatchImg;
-
-        GameObject cpuMatchTextObj = new GameObject("Text");
-        cpuMatchTextObj.transform.SetParent(cpuMatchBtnObj.transform, false);
-        var cpuMatchTextRect = cpuMatchTextObj.AddComponent<RectTransform>();
-        cpuMatchTextRect.anchorMin = Vector2.zero;
-        cpuMatchTextRect.anchorMax = Vector2.one;
-        cpuMatchTextRect.sizeDelta = Vector2.zero;
-        var cpuMatchText = cpuMatchTextObj.AddComponent<Text>();
-        cpuMatchText.text = "CPUマッチ";
-        cpuMatchText.font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
-        cpuMatchText.fontSize = 28;
-        cpuMatchText.alignment = TextAnchor.MiddleCenter;
-        cpuMatchText.color = Color.white;
-
-        titleController.cpuMatchButton = cpuMatchBtn;
-
-        // 2. CPUマッチパネルの作成
-        GameObject cpuPanelObj = new GameObject("CpuMatchPanel");
-        cpuPanelObj.transform.SetParent(titleCanvasObj.transform, false);
-        var cpuPanelRect = cpuPanelObj.AddComponent<RectTransform>();
-        cpuPanelRect.anchoredPosition = new Vector2(0, -30);
-        cpuPanelRect.sizeDelta = new Vector2(400, 300);
-        var cpuPanelImg = cpuPanelObj.AddComponent<Image>();
-        cpuPanelImg.color = new Color(0.1f, 0.1f, 0.1f, 0.9f);
-        cpuPanelObj.SetActive(false); // 初期非表示
-
-        titleController.cpuMatchPanel = cpuPanelObj;
-
-        // パネルタイトル
-        GameObject panelTitleObj = new GameObject("TitleText");
-        panelTitleObj.transform.SetParent(cpuPanelObj.transform, false);
-        var panelTitleRect = panelTitleObj.AddComponent<RectTransform>();
-        panelTitleRect.anchoredPosition = new Vector2(0, 110);
-        panelTitleRect.sizeDelta = new Vector2(300, 40);
-        var panelTitleText = panelTitleObj.AddComponent<Text>();
-        panelTitleText.text = "プレイする人数を選択";
-        panelTitleText.font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
-        panelTitleText.fontSize = 24;
-        panelTitleText.alignment = TextAnchor.MiddleCenter;
-        panelTitleText.color = Color.white;
-
-        // ボタン作成ヘルパー
-        Button CreatePanelButton(string name, string text, float yPos)
+        // --- 2. クリーンアップ ---
+        Undo.IncrementCurrentGroup();
+        Undo.SetCurrentGroupName("Repair UI with Sprites");
+        for (int i = titleCanvasObj.transform.childCount - 1; i >= 0; i--)
         {
-            GameObject btnObj = new GameObject(name);
-            btnObj.transform.SetParent(cpuPanelObj.transform, false);
-            var rect = btnObj.AddComponent<RectTransform>();
-            rect.anchoredPosition = new Vector2(0, yPos);
-            rect.sizeDelta = new Vector2(250, 50);
-
-            var img = btnObj.AddComponent<Image>();
-            img.color = new Color(0.3f, 0.3f, 0.3f);
-            var btn = btnObj.AddComponent<Button>();
-            btn.targetGraphic = img;
-
-            GameObject txtObj = new GameObject("Text");
-            txtObj.transform.SetParent(btnObj.transform, false);
-            var txtRect = txtObj.AddComponent<RectTransform>();
-            txtRect.anchorMin = Vector2.zero;
-            txtRect.anchorMax = Vector2.one;
-            txtRect.sizeDelta = Vector2.zero;
-            var txt = txtObj.AddComponent<Text>();
-            txt.text = text;
-            txt.font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
-            txt.fontSize = 24;
-            txt.alignment = TextAnchor.MiddleCenter;
-            txt.color = Color.white;
-
-            return btn;
+            Transform t = titleCanvasObj.transform.GetChild(i);
+            if (t.name == "CpuMatchPanel" || t.name.Contains("Generated")) Undo.DestroyObjectImmediate(t.gameObject);
+        }
+        // MainMenuCardも一旦掃除
+        for (int i = buttonsContainer.childCount - 1; i >= 0; i--)
+        {
+            Transform t = buttonsContainer.GetChild(i);
+            if (t.name.Contains("MatchCard")) Undo.DestroyObjectImmediate(t.gameObject);
         }
 
-        titleController.cpu2PlayerButton = CreatePanelButton("Cpu2PlayerButton", "2人プレイ", 40);
-        titleController.cpu3PlayerButton = CreatePanelButton("Cpu3PlayerButton", "3人プレイ", -20);
-        titleController.cpu4PlayerButton = CreatePanelButton("Cpu4PlayerButton", "4人プレイ", -80);
-        titleController.cpuBackButton = CreatePanelButton("CpuBackButton", "戻る", -140);
-        
-        // 戻るボタンだけ色をマイルドに
-        titleController.cpuBackButton.GetComponent<Image>().color = new Color(0.5f, 0.2f, 0.2f);
+        // --- 3. メインメニューカードの作成 ---
+        string titleSpritePath = "Assets/Sprites/UI/TitleButton.png";
+        SelectionCard CreateCard(Transform parent, string name, string id, Sprite sp)
+        {
+            GameObject obj = new GameObject(name, typeof(RectTransform), typeof(Image), typeof(SelectionCard), typeof(CanvasGroup));
+            obj.transform.SetParent(parent, false);
+            var rect = obj.GetComponent<RectTransform>();
+            rect.sizeDelta = new Vector2(250, 375); // 1:1.5のカード比率に固定
+
+            var img = obj.GetComponent<Image>();
+            img.sprite = sp;
+            img.color = Color.white;
+            img.preserveAspect = false; // 強制的に枠いっぱいに広げてサイズを完全に統一する
+            var sc = obj.GetComponent<SelectionCard>();
+            sc.selectionId = id;
+            return sc;
+        }
+
+        var m1 = CreateCard(buttonsContainer, "RandomMatchCard", "Random", GetSprite(titleSpritePath, 0));
+        var m2 = CreateCard(buttonsContainer, "FriendMatchCard", "Friend", GetSprite(titleSpritePath, 1));
+        var m3 = CreateCard(buttonsContainer, "CpuMatchCard", "CPU", GetSprite(titleSpritePath, 2));
+        titleController.mainSelectionCards = new SelectionCard[] { m1, m2, m3 };
+
+        // 既存のボタンを隠す
+        if (titleController.randomMatchButton != null) titleController.randomMatchButton.gameObject.SetActive(false);
+        if (titleController.friendMatchButton != null) titleController.friendMatchButton.gameObject.SetActive(false);
+        if (titleController.cpuMatchButton != null) titleController.cpuMatchButton.gameObject.SetActive(false);
+
+        // --- 4. CPU人数選択パネルの作成 ---
+        GameObject cpuPanel = new GameObject("CpuMatchPanel", typeof(RectTransform), typeof(Image), typeof(CanvasGroup));
+        cpuPanel.transform.SetParent(titleCanvasObj.transform, false);
+        var panelRect = cpuPanel.GetComponent<RectTransform>();
+        panelRect.anchoredPosition = Vector2.zero; panelRect.sizeDelta = new Vector2(1000, 600);
+        cpuPanel.GetComponent<Image>().color = new Color(0, 0, 0, 0f); // 背景を完全に透明に修正
+        cpuPanel.SetActive(false);
+        titleController.cpuMatchPanel = cpuPanel;
+
+        string cpuSpritePath = "Assets/Sprites/UI/CpuPlayerButton.png";
+        SelectionCard CreateCpuCard(string name, int count, Sprite sp, float xPos)
+        {
+            var sc = CreateCard(cpuPanel.transform, name, "", sp);
+            sc.playerCount = count;
+            var rect = sc.GetComponent<RectTransform>();
+            rect.anchoredPosition = new Vector2(xPos, 0); // Yは常に0
+            rect.sizeDelta = new Vector2(250, 375); // メインカードとサイズを一致させる
+            return sc;
+        }
+
+        var c2 = CreateCpuCard("Card2", 2, GetSprite(cpuSpritePath, 0), -300);
+        var c3 = CreateCpuCard("Card3", 3, GetSprite(cpuSpritePath, 1), 0);
+        var c4 = CreateCpuCard("Card4", 4, GetSprite(cpuSpritePath, 2), 300);
+        titleController.cpuSelectionCards = new SelectionCard[] { c2, c3, c4 };
+
+        // --- 5. フレンドマッチ ホスト/ゲストボタンの差し替え ---
+        string friendSpritePath = "Assets/Sprites/UI/FriendMatchButton.png";
+        void SetupFriendCard(Button btn, Sprite sp, float xPos)
+        {
+            if (btn == null) return;
+            var rect = btn.GetComponent<RectTransform>();
+            rect.anchoredPosition = new Vector2(xPos, 0); // 中央
+            rect.sizeDelta = new Vector2(180, 270); // 小さめのカードサイズに調整
+            
+            var img = btn.GetComponent<Image>();
+            if (img != null) { 
+                img.sprite = sp; 
+                img.color = Color.white; 
+                img.preserveAspect = false; // 比率維持をオフにしてサイズを強制
+            }
+            
+            var txt = btn.GetComponentInChildren<Text>();
+            if (txt != null) txt.enabled = false;
+
+            // 演出用のコンポーネントを追加/更新
+            var sc = btn.GetComponent<SelectionCard>() ?? btn.gameObject.AddComponent<SelectionCard>();
+            sc.selectionId = (btn.name.Contains("Host")) ? "CancelMatch" : "CancelMatch"; // Unify as CancelMatch for easy fanning logic overrides
+            sc.hoverYOffset = 30f;
+            sc.hoverScale = 1.1f;
+        }
+
+        SetupFriendCard(titleController.hostButton, GetSprite(friendSpritePath, 0), -100);
+        SetupFriendCard(titleController.guestButton, GetSprite(friendSpritePath, 1), 100);
 
         EditorUtility.SetDirty(titleController);
+        EditorUtility.SetDirty(titleController.hostButton);
+        EditorUtility.SetDirty(titleController.guestButton);
         UnityEditor.SceneManagement.EditorSceneManager.MarkSceneDirty(UnityEditor.SceneManagement.EditorSceneManager.GetActiveScene());
-        Debug.Log("CPU Match UI dynamically created and assigned successfully!");
+        Debug.Log("UI build complete with automatic sprite assignment.");
     }
 }

@@ -133,6 +133,15 @@ namespace DonGame2D.Logic
         [Networked]
         public TickTimer CpuThinkTimer { get; set; }
 
+        [Networked]
+        public int PendingWinnerActorId { get; set; }
+
+        [Networked, Capacity(4)]
+        public NetworkArray<int> DonCallerActorIds { get; }
+
+        [Networked]
+        public int DonCallersCount { get; set; }
+
         // --- ローカル状態 ---
         public List<CardInfo> myLocalHand = new List<CardInfo>();
         public event System.Action OnHandUpdated;
@@ -164,6 +173,10 @@ namespace DonGame2D.Logic
                     IsGameOver = false;
                     CurrentRound = 1;
                     WinnerActorId = -1;
+                    PendingWinnerActorId = -1;
+                    LastPlayedPlayerActorId = -1;
+                    DonDeclarerActorId = -1;
+                    DonTargetActorId = -1;
                     PlayerReadyStates.Clear();
                     PlayerCredits.Clear();
                     IsDonWindowOpen = false;
@@ -236,6 +249,60 @@ namespace DonGame2D.Logic
                     if (!IsWaitingForDonGaeshi && DiscardCount > 0)
                     {
                         TryCpuDonAction();
+                    }
+
+                    // --- Don受付時間（あがり時も含む）の監視 ---
+                    if (IsDonWindowOpen && DonGraceTimer.IsRunning && DonGraceTimer.Expired(Runner))
+                    {
+                        IsDonWindowOpen = false;
+                        DonGraceTimer = TickTimer.None;
+
+                        // もしDon宣言者がいれば、Don確定処理へ
+                        if (DonCallersCount > 0)
+                        {
+                            Debug.Log($"[Server] DonGraceTimer Expired. Starting ConfirmMultiDonWin for {DonCallersCount} caller(s).");
+                            ConfirmMultiDonWin();
+                        }
+                        // もし「あがり待機」中のプレイヤーがいれば勝利確定へ
+                        else if (PendingWinnerActorId > 0)
+                        {
+                            int winnerId = PendingWinnerActorId;
+                            PendingWinnerActorId = -1;
+                            Debug.Log($"[Server] DonGraceTimer Expired. Starting Win process for PendingWinner: {winnerId}");
+
+                            if (DrawPenaltyCount > 0)
+                            {
+                                StartCoroutine(Co_ProcessOutWinWithPenalty(winnerId));
+                            }
+                            else
+                            {
+                                ConfirmOutWin(winnerId);
+                            }
+                        }
+                        
+                        // 8 が出された場合はスート選択が終わるまで待機
+                        bool shouldWaitEight = IsWaitingForSuitSelection;
+                        
+                        // 次のプレイヤーがCPUなら思考タイマーが既に切れている可能性があるので、
+                        // 思考タイマーがRunning中でない（＝既にExpiredしている）か、既にExpiredしていれば即座に行動
+                        var nextActor = GetActor(CurrentTurnPlayerActorId);
+                        if (nextActor.IsActive && nextActor.IsCPU && !IsRoundOver && !shouldWaitEight && !IsWaitingForDonGaeshi && DonCallersCount == 0 && PendingWinnerActorId <= 0)
+                        {
+                            if (!CpuThinkTimer.IsRunning)
+                            {
+                                Debug.Log($"[Server] Don window closed. CPU {nextActor.ActorId} thinks complete. Executing action.");
+                                ProcessCpuAction();
+                            }
+                        }
+                        else if (!shouldWaitEight && !IsRoundOver && !IsWaitingForDonGaeshi && DonCallersCount == 0 && PendingWinnerActorId <= 0)
+                        {
+                            // Don窓が閉まって、かつ誰もDonしておらず、上がり待機もいない場合のみターン回転
+                            if (LastPlayedPlayerActorId == CurrentTurnPlayerActorId)
+                            {
+                                Debug.Log("[Server] Don window closed. Turn was stuck after played card, rotating now.");
+                                RotateTurn();
+                            }
+                        }
                     }
 
                     if (CpuThinkTimer.IsRunning && CpuThinkTimer.Expired(Runner))
@@ -434,7 +501,7 @@ public void RPC_FriendMatchForceStart(int targetPlayers)
     CurrentTurnPlayerActorId = Actors.Get(0).ActorId;
     var startingActor = GetActor(CurrentTurnPlayerActorId);
     if (startingActor.IsActive && startingActor.IsCPU)
-        CpuThinkTimer = TickTimer.CreateFromSeconds(Runner, UnityEngine.Random.Range(1.5f, 2.5f));
+        CpuThinkTimer = TickTimer.CreateFromSeconds(Runner, UnityEngine.Random.Range(0.5f, 1.0f));
 
     Debug.Log($"[FriendMatch] ゲーム開始完了: {targetPlayers}人構成");
 }
@@ -561,7 +628,7 @@ public void RPC_FriendMatchForceStart(int targetPlayers)
             var startingActor = GetActor(CurrentTurnPlayerActorId);
             if (startingActor.IsActive && startingActor.IsCPU)
             {
-                CpuThinkTimer = TickTimer.CreateFromSeconds(Runner, UnityEngine.Random.Range(1.5f, 2.5f));
+                CpuThinkTimer = TickTimer.CreateFromSeconds(Runner, UnityEngine.Random.Range(0.5f, 1.0f));
             }
         }
 
@@ -657,9 +724,31 @@ private void AddCardToDiscard(CardInfo card, bool isInitialPlay = true)
 
         #region Player Actions
 
-        public bool TryPlayCard(CardInfo card)
+        public bool CanPlayCard(CardInfo card)
+    {
+        int localActorId = GetActorId(Runner.LocalPlayer);
+        if (localActorId != CurrentTurnPlayerActorId) return false;
+        if (IsWaitingForSuitSelection) return false;
+        if (IsWaitingForDonGaeshi) return false;
+        if (DonGraceTimer.IsRunning) return false;
+
+        CardInfo top = DiscardPile.Get(DiscardCount - 1);
+        if (DrawPenaltyCount > 0)
         {
-            if (Runner.LocalPlayer.PlayerId != CurrentTurnPlayerActorId) return false;
+            return card.Rank == 2;
+        }
+        else
+        {
+            if (card.Rank == top.Rank || card.SuitInt == ActiveSuitInt) return true;
+            if (ActiveSuitInt == -1) return true;
+        }
+        return false;
+    }
+
+    public bool TryPlayCard(CardInfo card)
+        {
+            int localActorId = GetActorId(Runner.LocalPlayer);
+            if (localActorId != CurrentTurnPlayerActorId) return false;
             if (IsWaitingForSuitSelection) return false; // スート選択征E��中はプレイ不可
             if (IsWaitingForDonGaeshi) return false; // Don返し征E��中はプレイ不可
             if (DonGraceTimer.IsRunning) return false; // 2秒タイマ�E稼働中はプレイ不可
@@ -706,11 +795,13 @@ private void AddCardToDiscard(CardInfo card, bool isInitialPlay = true)
         [Rpc(RpcSources.All, RpcTargets.StateAuthority)]
         private void RPC_SubmitCard(PlayerRef player, CardInfo card)
         {
-            IsDonWindowOpen = false; // 古いDon受付�E終亁E
+            IsDonWindowOpen = false; // 古いDon受付終了
+            PendingWinnerActorId = -1; // 勝利判定をリセット
 
             int actorId = GetActorId(player);
+            LastPlayedPlayerActorId = actorId; // 即座に更新してDon判定のガードを有効にする
 
-            // サーバ�E側�E�権限老E��で最終確認して状態更新
+            // サーバE側E権限老Eで最終確認して状態更新
                         // アニメーション通知を先に送る
             RPC_NotifyOpponentPlayCard(actorId, card);
 
@@ -726,29 +817,41 @@ private void AddCardToDiscard(CardInfo card, bool isInitialPlay = true)
             // 手札枚数更新
             UpdateHandCount(actorId, -1);
 
-            // 勝利判宁E
+            // 勝利判定
             if (serverHandData.ContainsKey(actorId) && serverHandData[actorId].Count == 0)
             {
-                ConfirmOutWin(actorId);
-                return;
-            }
+                Debug.Log($"[Server] Player {actorId} played last card. Entering Don grace window.");
+                PendingWinnerActorId = actorId;
+                
+            // Don受付を開く
+            IsDonWindowOpen = true;
+            DonGraceTimer = TickTimer.CreateFromSeconds(Runner, 1.2f);
+            DonCallersCount = 0;
+            for (int i = 0; i < 4; i++) DonCallerActorIds.Set(i, -1);
+            
+            if (card.Rank != 8) RotateTurn();
 
-            if (card.Rank == 8)
-            {
-                // 、E」が出された場合�Eターンの進行を征E��E
-                IsWaitingForSuitSelection = true;
-            }
-
-            CheckDonOpportunity(actorId, card, card.Rank == 8);
+            return;
         }
+
+        // --- 手札が0枚でない場合の通常処理 ---
+        if (card.Rank == 8)
+        {
+            IsWaitingForSuitSelection = true;
+        }
+
+        CheckDonOpportunity(actorId, card, card.Rank == 8);
+    }
 
         private void CheckDonOpportunity(int playedActorId, CardInfo playedCard, bool isEight)
         {
-            // リアルタイム判定モード：タイマ�EなぁE
-            // LastPlayedPlayerActorId を記録し、条件チェチE��はクライアント�Eでリアルタイムに行う
             LastPlayedPlayerActorId = playedActorId;
-            IsDonWindowOpen = false;   // タイマ�Eウィンドウは使わなぁE
-            DonGraceTimer = TickTimer.None;
+            IsDonWindowOpen = true;
+            
+            // 常に2.5秒の猶予を与える
+            DonGraceTimer = TickTimer.CreateFromSeconds(Runner, 1.2f);
+            DonCallersCount = 0;
+            for (int i = 0; i < 4; i++) DonCallerActorIds.Set(i, -1);
 
             if (!isEight) RotateTurn();
         }
@@ -765,11 +868,16 @@ private void AddCardToDiscard(CardInfo card, bool isInitialPlay = true)
             {
                 RotateTurn();
             }
+            else
+            {
+                Debug.Log("[Server] Suit choice submitted, but Don window is still open. Turn will rotate after window closes.");
+            }
         }
 
         public void RequestDraw()
         {
-            if (Runner.LocalPlayer.PlayerId != CurrentTurnPlayerActorId) return;
+            int localActorId = GetActorId(Runner.LocalPlayer);
+            if (localActorId != CurrentTurnPlayerActorId) return;
             if (IsWaitingForSuitSelection) return;
             if (IsWaitingForDonGaeshi) return;
             if (DonGraceTimer.IsRunning) return;
@@ -829,7 +937,7 @@ private void AddCardToDiscard(CardInfo card, bool isInitialPlay = true)
                 var a = Actors.Get(i);
                 if (a.IsActive && !a.IsCPU && a.PlayerRef == playerRef) return a.ActorId;
             }
-            return playerRef.PlayerId; // Fallback
+            return -1; // Fallback to -1 as 0 is not a valid ActorId
         }
 
         public ActorInfo GetActor(int actorId)
@@ -861,8 +969,11 @@ private void AddCardToDiscard(CardInfo card, bool isInitialPlay = true)
             var nextActor = activeActors[nextIdx];
             if (nextActor.IsCPU)
             {
-                // CPUのターンの場合、E、E秒�E遁E��を�Eれて思老E��シミュレーチE
-                CpuThinkTimer = TickTimer.CreateFromSeconds(Runner, UnityEngine.Random.Range(1.0f, 2.0f));
+                // レスポンス改善：Don受付中であっても先行して思考を開始する。
+                // 実際の行動(ProcessCpuAction)側でDon受付終了を待つ。
+                float thinkTime = UnityEngine.Random.Range(0.4f, 0.8f);
+                CpuThinkTimer = TickTimer.CreateFromSeconds(Runner, thinkTime);
+                Debug.Log($"[Server] Next turn is CPU {nextActor.ActorId}. Starting anticipatory think timer ({thinkTime:F1}s).");
             }
         }
 
@@ -941,29 +1052,43 @@ private void AddCardToDiscard(CardInfo card, bool isInitialPlay = true)
         [Rpc(RpcSources.All, RpcTargets.StateAuthority)]
         public void RPC_DeclareDon(PlayerRef callingPlayer)
         {
-            if (IsWaitingForDonGaeshi) return; // 既に誰かがDonしてぁE��
             if (IsRoundOver) return;
             if (DiscardCount == 0) return;
+            if (!IsDonWindowOpen) return;
 
             int actorId = GetActorId(callingPlayer);
+            
+            // すでに宣言済みかチェック
+            for (int i = 0; i < DonCallersCount; i++) {
+                if (DonCallerActorIds.Get(i) == actorId) return;
+            }
+
             int total = ServerGetHandTotal(actorId);
             CardInfo top = DiscardPile.Get(DiscardCount - 1);
 
-            // リアルタイム判定：�E刁E��最後にカードを出してぁE��ぁE��手札合訁E== 捨て札ランク
+            // リアルタイム判定：カードを出した人以外 ＆ 手札合計 == 捨て札ランク
             if (total == top.Rank && total <= 13 && actorId != LastPlayedPlayerActorId)
             {
-                DonDeclarerActorId = actorId;
-                DonTargetActorId = LastPlayedPlayerActorId;
-                IsWaitingForDonGaeshi = true;
+                if (DonCallersCount < 4) {
+                    DonCallerActorIds.Set(DonCallersCount, actorId);
+                    DonCallersCount++;
+                    
+                    // 全クライアントに視覚演出を表示するよう通知
+                    RPC_NotifyDon(actorId, ServerGetHandString(actorId));
+                }
 
-                var targetActor = GetActor(DonTargetActorId);
-                if (targetActor.IsActive)
-                {
-                    int targetTotal = ServerGetHandTotal(targetActor.ActorId);
-                    if (targetTotal != top.Rank)
+                if (DonCallersCount == 1) {
+                    DonTargetActorId = LastPlayedPlayerActorId;
+                    PendingWinnerActorId = -1;
+
+                    var targetActor = GetActor(DonTargetActorId);
+                    if (targetActor.IsActive)
                     {
-                        // Don返し不可のため、即座にDonを確宁E
-                        ConfirmDonWin(actorId, targetActor.ActorId, top.Rank);
+                        int targetTotal = ServerGetHandTotal(targetActor.ActorId);
+                        if (targetTotal == top.Rank)
+                        {
+                            IsWaitingForDonGaeshi = true;
+                        }
                     }
                 }
             }
@@ -984,6 +1109,10 @@ private void AddCardToDiscard(CardInfo card, bool isInitialPlay = true)
             {
                 // Don返し成功
                 IsWaitingForDonGaeshi = false;
+                
+                // 全員に演出を通知
+                RPC_NotifyDon(actorId, ServerGetHandString(actorId));
+
                 ConfirmDonGaeshiWin(actorId, DonDeclarerActorId, top.Rank);
             }
         }
@@ -994,85 +1123,270 @@ private void AddCardToDiscard(CardInfo card, bool isInitialPlay = true)
             else PlayerCredits.Add(actorId, amount);
         }
 
-        private void ConfirmDonWin(int winnerActorId, int loserActorId, int donValue)
+        private void ConfirmDonWin(int winnerId, int loserId, int donValue)
         {
-            IsRoundOver = true;
-            IsWaitingForDonGaeshi = false;
-            WinnerActorId = winnerActorId;
-
-            int loserTotal = ServerGetHandTotal(loserActorId);
-            int penalty = (donValue * 2 + loserTotal) * 10; // Donされた数字ÁE + 残りの手札の合訁Eに10を掛けたも�Eが�EナルチE��
-
-            AddCredits(winnerActorId, penalty);
-            AddCredits(loserActorId, -penalty);
-            
-            RoundEndTimer = TickTimer.CreateFromSeconds(Runner, 14.0f); // アニメーション用に時間を延長
-            string handStr = string.Join(";", serverHandData[loserActorId].Select(c => $"{c.SuitInt},{c.Rank}"));
-            string msg = $"Actor {winnerActorId} WON by DON!\nActor {loserActorId} lost {penalty} Credits";
-            
-            // TODO: UI表示用に、�Eの PlayerRef.PlayerId を渡す忁E��があるかもしれなぁE��、いったん ActorId で代替
-            RPC_PlayRoundEndAnim(0, winnerActorId, loserActorId, donValue, handStr, penalty, msg);
-        }
-
-        private void ConfirmDonGaeshiWin(int winnerActorId, int loserActorId, int donValue)
-        {
-            IsRoundOver = true;
-            IsWaitingForDonGaeshi = false;
-            WinnerActorId = winnerActorId;
-
-            int award = donValue * 100;
-
-            AddCredits(winnerActorId, award);
-            AddCredits(loserActorId, -award);
-
-            RoundEndTimer = TickTimer.CreateFromSeconds(Runner, 14.0f);
-            string handStr = string.Join(";", serverHandData[loserActorId].Select(c => $"{c.SuitInt},{c.Rank}"));
-            string msg = $"Actor {winnerActorId} WON by DON-GAESHI!\nActor {loserActorId} lost {award} Credits";
-            RPC_PlayRoundEndAnim(1, winnerActorId, loserActorId, donValue, handStr, award, msg);
-        }
-
-        private void ConfirmOutWin(int winnerActorId)
-        {
-            IsRoundOver = true;
-            WinnerActorId = winnerActorId;
-
-            int totalGain = 0;
-            string details = "";
-
-            foreach (var kvp in serverHandData)
+            // 複数人Don対応ロジックにリダイレクト
+            if (DonCallersCount == 0)
             {
-                if (kvp.Key == winnerActorId) continue;
+                DonCallerActorIds.Set(0, winnerId);
+                DonCallersCount = 1;
+                DonTargetActorId = loserId;
+            }
+            StartCoroutine(Co_ConfirmMultiDonWin());
+        }
 
-                int loserHandTotal = ServerGetHandTotal(kvp.Key);
-                int penalty = loserHandTotal * 10;
+        private System.Collections.IEnumerator Co_ConfirmMultiDonWin()
+        {
+            if (DonCallersCount == 0 || IsRoundOver) yield break;
+
+            Debug.Log($"[Victory] Co_ConfirmMultiDonWin triggered. Callers: {DonCallersCount}, Target: {DonTargetActorId}");
+
+            // 計算に必要な値を待機前に取得（2秒の間に DonCallersCount などが変更されるのを防ぐ）
+            int rank = DiscardPile.Get(DiscardCount - 1).Rank;
+            int callers = DonCallersCount;
+            int targetId = DonTargetActorId;
+            int targetHandTotal = ServerGetHandTotal(targetId);
+
+            // Don演出を表示するための待機時間を追加
+            yield return new WaitForSeconds(2.0f);
+
+            // 待機中に他のプレイヤーがあがった場合などのダブルチェック
+            if (IsRoundOver) yield break;
+            IsRoundOver = true;
+
+            // 罰点計算: ランク * (人数+1) * 10 + 手札合計 * 10
+            int totalPenalty = rank * (callers + 1) * 10 + targetHandTotal * 10;
+
+            int totalUnits = totalPenalty / 10;
+            int baseUnits = totalUnits / (callers > 0 ? callers : 1); // 安全策として 0 回避
+            int remainderUnits = totalUnits % (callers > 0 ? callers : 1);
+
+            AddCredits(targetId, -totalPenalty);
+
+            List<int> winnerList = new List<int>();
+            int starterId = -1;
+            int luckyIndex = Random.Range(0, callers);
+
+            for (int i = 0; i < callers; i++)
+            {
+                int winnerId = DonCallerActorIds.Get(i);
+                winnerList.Add(winnerId);
                 
-                AddCredits(kvp.Key, -penalty);
-                totalGain += penalty;
-                details += $"P{kvp.Key}:-{penalty} ";
+                int gain = baseUnits * 10;
+                if (i == luckyIndex)
+                {
+                    gain += remainderUnits * 10;
+                    starterId = winnerId;
+                }
+                AddCredits(winnerId, gain);
             }
 
-            AddCredits(winnerActorId, totalGain);
-            RoundEndTimer = TickTimer.CreateFromSeconds(Runner, 16.0f); // 褁E��人のアウト演�Eのためにさらに延長
+            WinnerActorId = starterId; 
+            IsWaitingForDonGaeshi = false;
+            IsWaitingForSuitSelection = false;
+            PendingWinnerActorId = -1;
+
+            string loserHandStr = string.Join(";", serverHandData[targetId].Select(c => $"{c.SuitInt},{c.Rank}"));
+            string winnersStr = string.Join(", ", winnerList.Select(id => $"Player {id}"));
+            string resultMsg = $"{winnersStr} DON! Total: {totalPenalty} shared.";
+
+            // winnerNames として winnersStr を渡す
+            RPC_PlayRoundEndAnim(0, starterId, targetId, rank, loserHandStr, totalPenalty, resultMsg, winnersStr);
             
-            var allLosers = serverHandData
-                .Where(k => k.Key != winnerActorId)
-                .Select(k => $"{k.Key}:" + string.Join(";", k.Value.Select(c => $"{c.SuitInt},{c.Rank}")))
-                .ToArray();
-            
-            string combinedHandStr = string.Join("|", allLosers);
-            string msg = $"Actor {winnerActorId} OUT!\nGained {totalGain} Credits\n({details})";
-            RPC_PlayRoundEndAnim(2, winnerActorId, -1, 0, combinedHandStr, totalGain, msg);
+            RoundEndTimer = TickTimer.None;
         }
 
+        private void ConfirmMultiDonWin()
+        {
+            StartCoroutine(Co_ConfirmMultiDonWin());
+        }
+
+
+        private void ConfirmDonGaeshiWin(int winnerId, int loserId, int donValue)
+        {
+            if (IsRoundOver) return;
+            IsRoundOver = true;
+
+            Debug.Log($"[Victory] ConfirmDonGaeshiWin triggered. Winner: {winnerId}, Loser: {loserId}, Value: {donValue}");
+
+            int totalPenalty = donValue * 100;
+            AddCredits(loserId, -totalPenalty);
+            AddCredits(winnerId, totalPenalty);
+
+            WinnerActorId = winnerId;
+            IsWaitingForDonGaeshi = false;
+            IsWaitingForSuitSelection = false;
+
+            string resultMsg = $"Player {winnerId} DON-GAESHI! (+{totalPenalty} Credits)";
+            RPC_PlayRoundEndAnim(1, winnerId, loserId, donValue, "", totalPenalty, resultMsg, $"Player {winnerId}");
+            
+            RoundEndTimer = TickTimer.None;
+        }
+
+        private System.Collections.IEnumerator Co_ProcessOutWinWithPenalty(int winnerId)
+        {
+            if (IsRoundOver) yield break;
+            IsRoundOver = true;
+
+            Debug.Log($"[Victory] Co_ProcessOutWinWithPenalty triggered. Winner: {winnerId}, DrawPenalty: {DrawPenaltyCount}");
+
+            WinnerActorId = winnerId;
+            IsWaitingForDonGaeshi = false;
+            IsWaitingForSuitSelection = false;
+
+            // 追加: ペナルティドローを実際に実行
+            int penaltyCount = DrawPenaltyCount;
+            int targetActorId = CurrentTurnPlayerActorId;
+            var targetActor = GetActor(targetActorId);
+
+            if (penaltyCount > 0 && targetActor.IsActive)
+            {
+                Debug.Log($"[Server] Forcing final penalty draw of {penaltyCount} cards for Player {targetActorId}");
+                
+                int actualDrawn = 0;
+                for (int i = 0; i < penaltyCount; i++)
+                {
+                    if (DrawCount > 0)
+                    {
+                        DrawCount--;
+                        var card = DrawPile.Get(DrawCount);
+                        ServerAddCardToHand(targetActorId, card);
+                        if (!targetActor.IsCPU)
+                        {
+                            RPC_ReceiveCard(targetActor.PlayerRef, card);
+                        }
+                        actualDrawn++;
+                    }
+                }
+                
+                if (actualDrawn > 0)
+                {
+                    UpdateHandCount(targetActorId, actualDrawn);
+                    // 全クライアントにドロー演出を通知
+                    RPC_NotifyOpponentDrawCard(targetActorId, actualDrawn);
+                    
+                    // アニメーションの完了を待つ (枚数に応じて待機時間を調整)
+                    yield return new WaitForSeconds(0.5f + (actualDrawn * 0.1f));
+                }
+            }
+
+            // 通常のOutと同様に他プレイヤーの手札を収集
+            List<string> otherHands = new List<string>();
+            int totalBonus = 0;
+
+            for (int i = 0; i < 4; i++)
+            {
+                var actor = Actors.Get(i);
+                if (actor.IsActive && actor.ActorId != winnerId)
+                {
+                    if (serverHandData.TryGetValue(actor.ActorId, out var hand))
+                    {
+                        string handStr = string.Join(";", hand.Select(c => $"{c.SuitInt},{c.Rank}"));
+                        otherHands.Add($"{actor.ActorId}:{handStr}");
+                        
+                        int penalty = hand.Sum(c => c.Rank) * 10;
+                        AddCredits(actor.ActorId, -penalty);
+                        totalBonus += penalty;
+                    }
+                }
+            }
+            
+            AddCredits(winnerId, totalBonus);
+
+            string combinedHands = string.Join("|", otherHands);
+            string resultMsg = $"Player {winnerId} OUT WIN (Penalty)! (+{totalBonus} Credits)";
+
+            RPC_PlayRoundEndAnim(2, winnerId, -1, 0, combinedHands, totalBonus, resultMsg, $"Player {winnerId}");
+            
+            RoundEndTimer = TickTimer.None;
+            yield break;
+        }
+
+
+
+
+        private void ConfirmOutWin(int winnerId)
+        {
+            if (IsRoundOver) return;
+            IsRoundOver = true;
+
+            Debug.Log($"[Victory] ConfirmOutWin triggered. Winner: {winnerId}");
+
+            WinnerActorId = winnerId;
+            IsWaitingForDonGaeshi = false;
+            IsWaitingForSuitSelection = false;
+
+            // 他のプレイヤーの手札を収集（PlayerId:Card,Card|...）
+            List<string> otherHands = new List<string>();
+            int totalBonus = 0;
+
+            for (int i = 0; i < 4; i++)
+            {
+                var actor = Actors.Get(i);
+                if (actor.IsActive && actor.ActorId != winnerId)
+                {
+                    if (serverHandData.TryGetValue(actor.ActorId, out var hand))
+                    {
+                        string handStr = string.Join(";", hand.Select(c => $"{c.SuitInt},{c.Rank}"));
+                        otherHands.Add($"{actor.ActorId}:{handStr}");
+                        
+                        int penalty = hand.Sum(c => c.Rank) * 10;
+                        AddCredits(actor.ActorId, -penalty);
+                        totalBonus += penalty;
+                    }
+                }
+            }
+            AddCredits(winnerId, totalBonus);
+
+            string combinedHands = string.Join("|", otherHands);
+            string resultMsg = $"Player {winnerId} OUT WIN! (+{totalBonus} Credits)";
+
+            RPC_PlayRoundEndAnim(2, winnerId, -1, 0, combinedHands, totalBonus, resultMsg, $"Player {winnerId}");
+            
+            RoundEndTimer = TickTimer.None;
+        }
+
+
+
+
         [Rpc(RpcSources.StateAuthority, RpcTargets.All)]
-        private void RPC_PlayRoundEndAnim(int winType, int winnerId, int loserId, int donValue, string loserHandStr, int totalPenalty, string resultMsg)
+        private void RPC_PlayRoundEndAnim(int winType, int winnerId, int loserId, int donValue, string loserHandStr, int totalPenalty, string resultMsg, string winnerNames = "")
         {
             var ui = UnityEngine.Object.FindObjectOfType<UI.GameUIController>();
             if (ui != null)
             {
                 string fullMsg = resultMsg + "\n\n" + GetScoreBoardText();
-                ui.PlayRoundEndAnimation(winType, winnerId, loserId, donValue, loserHandStr, totalPenalty, fullMsg, CurrentRound >= 5);
+                ui.PlayRoundEndAnimation(winType, winnerId, loserId, donValue, loserHandStr, totalPenalty, fullMsg, CurrentRound >= 5, winnerNames);
             }
+        }
+
+        [Rpc(RpcSources.StateAuthority, RpcTargets.All)]
+        private void RPC_ClearHandUI(int actorId)
+        {
+            var ui = UnityEngine.Object.FindObjectOfType<UI.GameUIController>();
+            if (ui != null)
+            {
+                ui.ClearHandUI(actorId);
+            }
+        }
+
+        [Rpc(RpcSources.StateAuthority, RpcTargets.All)]
+        private void RPC_NotifyDon(int actorId, string handData)
+        {
+            var ui = UnityEngine.Object.FindObjectOfType<UI.GameUIController>();
+            if (ui != null)
+            {
+                ui.ShowDonAnimation(actorId, handData);
+            }
+        }
+
+        private string ServerGetHandString(int actorId)
+        {
+            if (serverHandData.ContainsKey(actorId))
+            {
+                return string.Join(";", serverHandData[actorId].Select(c => $"{(int)c.Suit},{c.Rank}"));
+            }
+            return "";
         }
 
         [Rpc(RpcSources.StateAuthority, RpcTargets.All)]
@@ -1094,6 +1408,16 @@ private void AddCardToDiscard(CardInfo card, bool isInitialPlay = true)
             RequestNextRoundInternal();
         }
 
+        [Rpc(RpcSources.All, RpcTargets.StateAuthority)]
+        public void RPC_ReportAnimationFinished()
+        {
+            if (IsRoundOver && Object.HasStateAuthority)
+            {
+                // アニメーション終了から2秒後に次のラウンドへ（少しの余韻）
+                RoundEndTimer = TickTimer.CreateFromSeconds(Runner, 2.0f);
+            }
+        }
+
         private void ResetRoundState()
         {
             DrawCount = 0;
@@ -1103,6 +1427,11 @@ private void AddCardToDiscard(CardInfo card, bool isInitialPlay = true)
             IsDonWindowOpen = false;
             IsWaitingForDonGaeshi = false;
             IsWaitingForSuitSelection = false;
+            PendingWinnerActorId = -1;
+            LastPlayedPlayerActorId = -1;
+            DonDeclarerActorId = -1;
+            DonTargetActorId = -1;
+            DonCallersCount = 0;
             serverHandData.Clear();
             
             for (int i = 0; i < PlayerHandCounts.Length; i++) PlayerHandCounts.Set(i, 0);
@@ -1169,7 +1498,7 @@ private void AddCardToDiscard(CardInfo card, bool isInitialPlay = true)
             var startingActor = GetActor(CurrentTurnPlayerActorId);
             if (startingActor.IsActive && startingActor.IsCPU)
             {
-                CpuThinkTimer = TickTimer.CreateFromSeconds(Runner, UnityEngine.Random.Range(1.5f, 2.5f));
+                CpuThinkTimer = TickTimer.CreateFromSeconds(Runner, UnityEngine.Random.Range(0.5f, 1.0f));
             }
         }
 
@@ -1177,7 +1506,8 @@ private void AddCardToDiscard(CardInfo card, bool isInitialPlay = true)
         {
             if (!Object.HasStateAuthority) return;
 
-            if (IsWaitingForSuitSelection || IsWaitingForDonGaeshi || DonGraceTimer.IsRunning || IsDonWindowOpen) return;
+            // バグ修正: ドン受付中、ドン確定演出中、上がり確定待機中はCPUの行動を完全に遮断する
+            if (IsRoundOver || IsWaitingForSuitSelection || IsWaitingForDonGaeshi || DonGraceTimer.IsRunning || DonCallersCount > 0 || PendingWinnerActorId != -1) return;
 
             var cpuActor = GetActor(CurrentTurnPlayerActorId);
             if (!cpuActor.IsActive || !cpuActor.IsCPU) return;
@@ -1212,7 +1542,13 @@ private void AddCardToDiscard(CardInfo card, bool isInitialPlay = true)
 
                     if (hand.Count == 0)
                     {
-                        ConfirmOutWin(cpuActor.ActorId);
+                        Debug.Log($"[Server] CPU {cpuActor.ActorId} played last card. Entering Don grace window.");
+                        PendingWinnerActorId = cpuActor.ActorId;
+
+                        IsDonWindowOpen = true;
+                        DonGraceTimer = TickTimer.CreateFromSeconds(Runner, 1.2f);
+
+                        if (playCard.Rank != 8) RotateTurn();
                         return;
                     }
 
@@ -1230,6 +1566,7 @@ private void AddCardToDiscard(CardInfo card, bool isInitialPlay = true)
                 else
                 {
                     // ドロー
+                    IsDonWindowOpen = false; // CPUが行動（ドロー）したためDon受付を終了
                     int count = DrawPenaltyCount > 0 ? DrawPenaltyCount : 1;
                     DrawPenaltyCount = 0;
                     int cardsDrawn = 0;
@@ -1271,8 +1608,12 @@ private void AddCardToDiscard(CardInfo card, bool isInitialPlay = true)
                     int total = ServerGetHandTotal(actor.ActorId);
                     if (total == top.Rank && total <= 13)
                     {
+                        Debug.Log($"[CPU] Actor {actor.ActorId} (CPU) Declaring DON! Hand Total: {total}, Discard Rank: {top.Rank}");
                         IsDonWindowOpen = false;
                         DonGraceTimer = TickTimer.None;
+
+                        // CPUのDonが成功したので、待機中の勝利（あれば）はキャンセル
+                        PendingWinnerActorId = -1;
 
                         DonDeclarerActorId = actor.ActorId;
                         DonTargetActorId = LastPlayedPlayerActorId;
@@ -1284,16 +1625,19 @@ private void AddCardToDiscard(CardInfo card, bool isInitialPlay = true)
                             int targetTotal = ServerGetHandTotal(targetActor.ActorId);
                             if (targetTotal != top.Rank)
                             {
+                                RPC_NotifyDon(actor.ActorId, ServerGetHandString(actor.ActorId));
                                 ConfirmDonWin(actor.ActorId, targetActor.ActorId, top.Rank);
                             }
                             else if (targetActor.IsCPU)
                             {
-                                // ターゲチE��めEPUの場合�E自動でドン返し
+                                // ターゲットがCPUの場合：ドンに対して自動でドン返し
+                                RPC_NotifyDon(actor.ActorId, ServerGetHandString(actor.ActorId)); // まず最初のドン
+                                RPC_NotifyDon(targetActor.ActorId, ServerGetHandString(targetActor.ActorId)); // 次にドン返し
                                 IsWaitingForDonGaeshi = false;
                                 ConfirmDonGaeshiWin(targetActor.ActorId, actor.ActorId, top.Rank);
                             }
-                            // ターゲチE��が実�Eレイヤーの場合�E手動でドン返しするか、猶予時間�Eれを征E��
-                            // 猶予時間�Eれ時の勝敗確定�E後述のDonGraceTimer.Expiredにて忁E��E
+                            // ターゲチEが実Eレイヤーの場合E手動でドン返しするか、猶予時間Eれを征E
+                            // 猶予時間Eれ時の勝敗確定E後述のDonGraceTimer.Expiredにて忁EE
                         }
                         return; // 1人がDonしたら終亁E
                     }

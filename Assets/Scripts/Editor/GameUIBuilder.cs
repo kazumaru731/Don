@@ -140,7 +140,7 @@ namespace DonGame2D.Editor
 
             // 各種UIパーツの作成
             // 手札パネル（下部固定）
-            var handObj = CreatePanel(gameCanvasObj.transform, "PlayerHandPanel", new Vector2(0, 150), new Vector2(1000, 250), new Vector2(0.5f, 0f), new Vector2(0.5f, 0f));
+            var handObj = CreatePanel(gameCanvasObj.transform, "PlayerHandPanel", new Vector2(0, 300), new Vector2(1000, 250), new Vector2(0.5f, 0f), new Vector2(0.5f, 0f));
             handObj.GetComponent<Image>().color = new Color(0, 0, 0, 0f); // 透明に設定
             var horizontalLayout = handObj.AddComponent<HorizontalLayoutGroup>();
             horizontalLayout.childAlignment = TextAnchor.MiddleCenter;
@@ -305,14 +305,6 @@ namespace DonGame2D.Editor
             startBtnObj.GetComponent<Image>().color = new Color(0.8f, 0.2f, 0.2f, 1f); // 赤色
             titleUIController.hostStartButton = startBtnObj.GetComponent<Button>();
 
-            // ランダムマッチ用戻るボタン
-            var randomBackBtnObj = CreateButton(titleCanvasObj.transform, "RandomMatchBackButton", "← キャンセル", new Vector2(0, -250), new Vector2(0.5f, 0.5f));
-            randomBackBtnObj.GetComponent<RectTransform>().sizeDelta = new Vector2(250, 70);
-            randomBackBtnObj.GetComponentInChildren<Text>().color = Color.white;
-            randomBackBtnObj.GetComponent<Image>().color = new Color(0.3f, 0.3f, 0.3f, 1f); // 濃いグレー
-            titleUIController.randomMatchBackButton = randomBackBtnObj.GetComponent<Button>();
-            randomBackBtnObj.SetActive(false);
-
             // =============================================
             // フレンドマッチパネルの作成
             // =============================================
@@ -335,12 +327,6 @@ namespace DonGame2D.Editor
             titleUIController.guestButton = guestBtnObj.GetComponent<Button>();
  
             // 戻るボタン
-            var backBtnObj = CreateButton(fmPanel.transform, "BackButton", "← 戻る", new Vector2(0, -200), new Vector2(0.5f, 0.5f));
-            backBtnObj.GetComponent<RectTransform>().sizeDelta = new Vector2(200, 70);
-            backBtnObj.GetComponentInChildren<Text>().color = Color.white;
-            backBtnObj.GetComponent<Image>().color = new Color(0.3f, 0.3f, 0.3f, 1f);
-            titleUIController.backButton = backBtnObj.GetComponent<Button>();
-
             // --- ホスト用パネル ---
             var hostPanel = CreatePanel(fmPanel.transform, "HostPanel", new Vector2(0, -110), new Vector2(500, 70), new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f));
             hostPanel.GetComponent<Image>().color = new Color(0, 0, 0, 0.3f);

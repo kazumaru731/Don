@@ -47,15 +47,15 @@ namespace DonGame2D.UI
             }
 
             // カードの固定サイズ（全カード共通、比率1:1.4）
-            rectTransform.sizeDelta = new Vector2(100f, 140f);
+            rectTransform.sizeDelta = new Vector2(150f, 210f);
 
             // LayoutElementで固定サイズをレイアウトに伝える（ガタツキ防止）
             var layoutElement = GetComponent<LayoutElement>();
             if (layoutElement == null) layoutElement = gameObject.AddComponent<LayoutElement>();
-            layoutElement.preferredWidth = 100f;
-            layoutElement.preferredHeight = 140f;
-            layoutElement.minWidth = 100f;
-            layoutElement.minHeight = 140f;
+            layoutElement.preferredWidth = 150f;
+            layoutElement.preferredHeight = 210f;
+            layoutElement.minWidth = 150f;
+            layoutElement.minHeight = 210f;
             layoutElement.flexibleWidth = 0;
             layoutElement.flexibleHeight = 0;
         }
@@ -94,45 +94,52 @@ namespace DonGame2D.UI
         private bool isSmoothMoving = false;
         private float moveSpeed = 15f;
 
-        private void Update()
-        {
-            if (isSmoothMoving)
-            {
-                transform.position = Vector3.Lerp(transform.position, targetPosition, Time.deltaTime * moveSpeed);
-                transform.localRotation = Quaternion.Slerp(transform.localRotation, targetRotation, Time.deltaTime * moveSpeed);
-                
-                if (Vector3.Distance(transform.position, targetPosition) < 0.01f && Quaternion.Angle(transform.localRotation, targetRotation) < 0.1f)
-                {
-                    transform.position = targetPosition;
-                    transform.localRotation = targetRotation;
-                    isSmoothMoving = false;
-                }
-            }
-        }
+
+
+        private Coroutine moveCoroutine;
 
         public void SmoothMoveAndRotateTo(Vector3 targetWorldPos, Quaternion targetLocalRot)
         {
             if (IsDragging) return; // ドラッグ中は自動移動を拒否
-            targetPosition = targetWorldPos;
-            targetRotation = targetLocalRot;
-            isSmoothMoving = true;
+            
+            if (moveCoroutine != null) StopCoroutine(moveCoroutine);
+            moveCoroutine = StartCoroutine(Co_SmoothMove(targetWorldPos, targetLocalRot));
         }
+
+        private System.Collections.IEnumerator Co_SmoothMove(Vector3 targetWorldPos, Quaternion targetLocalRot)
+        {
+            Vector3 startPos = transform.position;
+            Quaternion startRot = transform.localRotation;
+            float elapsed = 0f;
+            float duration = 0.25f; // 約 15f の移動スピードに相当する時間
+
+            while (elapsed < duration)
+            {
+                elapsed += Time.deltaTime;
+                float t = Mathf.SmoothStep(0, 1, elapsed / duration);
+                transform.position = Vector3.Lerp(startPos, targetWorldPos, t);
+                transform.localRotation = Quaternion.Slerp(startRot, targetLocalRot, t);
+                yield return null;
+            }
+
+            transform.position = targetWorldPos;
+            transform.localRotation = targetLocalRot;
+            moveCoroutine = null;
+        }
+
 
         public void SmoothMoveTo(Vector3 targetWorldPos)
         {
-            if (IsDragging) return; // ドラッグ中は自動移動を拒否
-            targetPosition = targetWorldPos;
-            targetRotation = transform.localRotation; // 回転はいまの角度を維持
-            isSmoothMoving = true;
+            SmoothMoveAndRotateTo(targetWorldPos, transform.localRotation);
         }
+
 
         public void SetImmediatePosition(Vector3 worldPos)
         {
+            if (moveCoroutine != null) { StopCoroutine(moveCoroutine); moveCoroutine = null; }
             transform.position = worldPos;
-            targetPosition = worldPos;
-            targetRotation = transform.localRotation;
-            isSmoothMoving = false;
         }
+
 
 
         // 既存の DonGameManager 用
@@ -407,21 +414,35 @@ namespace DonGame2D.UI
             if (gameUI != null && gameUI.discardPileContainer != null)
             {
                 RectTransform discardRect = gameUI.discardPileContainer.GetComponent<RectTransform>();
-                if (RectTransformUtility.RectangleContainsScreenPoint(discardRect, eventData.position, eventData.pressEventCamera))
+                
+                // 【判定拡張】単なる RectangleContainsScreenPoint ではなく、マージンを持たせて判定する
+                Vector2 localPoint;
+                if (RectTransformUtility.ScreenPointToLocalPointInRectangle(discardRect, eventData.position, eventData.pressEventCamera, out localPoint))
                 {
-                    isDroppedOnDiscard = true;
+                    float margin = 100f; // 100px分、判定を外側に広げる
+                    Rect expandedRect = new Rect(
+                        discardRect.rect.x - margin,
+                        discardRect.rect.y - margin,
+                        discardRect.rect.width + margin * 2,
+                        discardRect.rect.height + margin * 2
+                    );
+
+                    if (expandedRect.Contains(localPoint))
+                    {
+                        isDroppedOnDiscard = true;
+                    }
                 }
             }
 
             if (isDroppedOnDiscard && DonFusionManager2D.Instance != null)
             {
                 // ドロップ成功として判定処理を呼ぶ
-                bool canPlay = DonFusionManager2D.Instance.TryPlayCard(cardInfoData);
-                if (canPlay)
+                if (DonFusionManager2D.Instance.CanPlayCard(cardInfoData))
                 {
-                    // ルール合致。提出成功。
-                    // 自分を破壊せず、UpdateFusionHandUIによる再生成に任せるため一旦手札の位置情報をリセット
-                    ReturnToHand();
+                    // プレイ可能な場合、先にアニメーションを開始（手札リストから外れることで同期による破棄を防ぐ）
+                    gameUI.PlayLocalDiscardAnimation(this, cardInfoData);
+                    // サーバーへ提出。この中でデータからも削除され OnHandUpdated が走る。
+                    DonFusionManager2D.Instance.TryPlayCard(cardInfoData);
                     return;
                 }
             }
