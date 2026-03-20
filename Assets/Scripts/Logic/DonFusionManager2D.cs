@@ -1186,12 +1186,13 @@ private void AddCardToDiscard(CardInfo card, bool isInitialPlay = true)
             IsWaitingForSuitSelection = false;
             PendingWinnerActorId = -1;
 
-            string loserHandStr = string.Join(";", serverHandData[targetId].Select(c => $"{c.SuitInt},{c.Rank}"));
+            string loserHandStr = $"{targetId}:" + string.Join(";", serverHandData[targetId].Select(c => $"{c.SuitInt},{c.Rank}"));
+            string winnerHandStr = string.Join(";", serverHandData[starterId].Select(c => $"{c.SuitInt},{c.Rank}"));
             string winnersStr = string.Join(", ", winnerList.Select(id => $"Player {id}"));
             string resultMsg = $"{winnersStr} DON! Total: {totalPenalty} shared.";
 
             // winnerNames として winnersStr を渡す
-            RPC_PlayRoundEndAnim(0, starterId, targetId, rank, loserHandStr, totalPenalty, resultMsg, winnersStr);
+            RPC_PlayRoundEndAnim(0, starterId, targetId, rank, loserHandStr, totalPenalty, resultMsg, winnersStr, winnerHandStr);
             
             RoundEndTimer = TickTimer.None;
         }
@@ -1217,8 +1218,10 @@ private void AddCardToDiscard(CardInfo card, bool isInitialPlay = true)
             IsWaitingForDonGaeshi = false;
             IsWaitingForSuitSelection = false;
 
+            string loserHandStr = $"{loserId}:" + ServerGetHandString(loserId);
+            string winnerHandStr = ServerGetHandString(winnerId);
             string resultMsg = $"Player {winnerId} DON-GAESHI! (+{totalPenalty} Credits)";
-            RPC_PlayRoundEndAnim(1, winnerId, loserId, donValue, "", totalPenalty, resultMsg, $"Player {winnerId}");
+            RPC_PlayRoundEndAnim(1, winnerId, loserId, donValue, loserHandStr, totalPenalty, resultMsg, $"Player {winnerId}", winnerHandStr);
             
             RoundEndTimer = TickTimer.None;
         }
@@ -1295,8 +1298,7 @@ private void AddCardToDiscard(CardInfo card, bool isInitialPlay = true)
 
             string combinedHands = string.Join("|", otherHands);
             string resultMsg = $"Player {winnerId} OUT WIN (Penalty)! (+{totalBonus} Credits)";
-
-            RPC_PlayRoundEndAnim(2, winnerId, -1, 0, combinedHands, totalBonus, resultMsg, $"Player {winnerId}");
+            RPC_PlayRoundEndAnim(2, winnerId, -1, 0, combinedHands, totalBonus, resultMsg, $"Player {winnerId}", "");
             
             RoundEndTimer = TickTimer.None;
             yield break;
@@ -1340,8 +1342,7 @@ private void AddCardToDiscard(CardInfo card, bool isInitialPlay = true)
 
             string combinedHands = string.Join("|", otherHands);
             string resultMsg = $"Player {winnerId} OUT WIN! (+{totalBonus} Credits)";
-
-            RPC_PlayRoundEndAnim(2, winnerId, -1, 0, combinedHands, totalBonus, resultMsg, $"Player {winnerId}");
+            RPC_PlayRoundEndAnim(2, winnerId, -1, 0, combinedHands, totalBonus, resultMsg, $"Player {winnerId}", "");
             
             RoundEndTimer = TickTimer.None;
         }
@@ -1350,13 +1351,13 @@ private void AddCardToDiscard(CardInfo card, bool isInitialPlay = true)
 
 
         [Rpc(RpcSources.StateAuthority, RpcTargets.All)]
-        private void RPC_PlayRoundEndAnim(int winType, int winnerId, int loserId, int donValue, string loserHandStr, int totalPenalty, string resultMsg, string winnerNames = "")
+        private void RPC_PlayRoundEndAnim(int winType, int winnerId, int loserId, int donValue, string loserHandStr, int totalPenalty, string resultMsg, string winnerNames = "", string winnerHandStr = "")
         {
             var ui = UnityEngine.Object.FindObjectOfType<UI.GameUIController>();
             if (ui != null)
             {
                 string fullMsg = resultMsg + "\n\n" + GetScoreBoardText();
-                ui.PlayRoundEndAnimation(winType, winnerId, loserId, donValue, loserHandStr, totalPenalty, fullMsg, CurrentRound >= 5, winnerNames);
+                ui.PlayRoundEndAnimation(winType, winnerId, loserId, donValue, loserHandStr, totalPenalty, fullMsg, CurrentRound >= 5, winnerNames, winnerHandStr);
             }
         }
 

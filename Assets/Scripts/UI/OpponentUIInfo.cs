@@ -210,6 +210,17 @@ namespace DonGame2D.UI
             }
         }
 
+        /// <summary>
+        /// カード以外の周辺UI（名前、枚数テキスト、背景、アウトライン）を表示・非表示にする
+        /// </summary>
+        public void SetPeripheralActive(bool active)
+        {
+            if (nameText != null) nameText.gameObject.SetActive(active);
+            if (countText != null) countText.gameObject.SetActive(active);
+            if (backgroundImage != null) backgroundImage.gameObject.SetActive(active);
+            if (outline != null) outline.enabled = active;
+        }
+
         private void CreateCardIcon(Sprite backSprite)
         {
             GameObject go = new GameObject("CardBack", typeof(RectTransform), typeof(Image));

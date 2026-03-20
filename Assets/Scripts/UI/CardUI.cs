@@ -163,6 +163,14 @@ namespace DonGame2D.UI
             UpdateVisuals(cardInfo.Suit, cardInfo.Rank, isFaceUp);
         }
 
+        public void SetFacing(bool isFaceUp)
+        {
+            if (isUsingFusion && cardInfoData.Rank > 0)
+                UpdateVisuals(cardInfoData.Suit, cardInfoData.Rank, isFaceUp);
+            else if (cardData != null)
+                UpdateVisuals(cardData.suit, cardData.rank, isFaceUp);
+        }
+
         private void UpdateVisuals(Suit suit, int rank, bool isFaceUp)
         {
             if (cardImage == null) EnsureComponents(); // 念のため再チェック
@@ -272,6 +280,9 @@ namespace DonGame2D.UI
 
         public void OnClick()
         {
+            var gameUI = Object.FindObjectOfType<GameUIController>();
+            if (gameUI != null && gameUI.IsInteractionBlocked) return;
+
             if (isUsingFusion && DonFusionManager2D.Instance != null)
             {
                 DonFusionManager2D.Instance.TryPlayCard(cardInfoData);
@@ -310,6 +321,9 @@ namespace DonGame2D.UI
 
         public void OnBeginDrag(PointerEventData eventData)
         {
+            var gameUI = Object.FindObjectOfType<GameUIController>();
+            if (gameUI != null && gameUI.IsInteractionBlocked) return;
+
             if (!isUsingFusion || isDiscarded) return; 
 
             IsDragging = true;

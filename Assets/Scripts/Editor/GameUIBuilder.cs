@@ -248,7 +248,7 @@ namespace DonGame2D.Editor
             // =========================
             // スート選択UIの作成（8を出した時用）
             // =========================
-            var suitPanelObj = CreatePanel(gameCanvasObj.transform, "SuitSelectionPanel", Vector2.zero, new Vector2(500, 200), new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f));
+            var suitPanelObj = CreatePanel(gameCanvasObj.transform, "SuitSelectionPanel", new Vector2(0, -130f), new Vector2(500, 160), new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f));
             suitPanelObj.GetComponent<Image>().color = new Color(0.1f, 0.1f, 0.1f, 0.95f);
             var suitTitle = CreateText(suitPanelObj.transform, "SuitTitle", "マークを選択", new Vector2(0, 50), 32, new Vector2(0.5f, 0.5f));
             suitTitle.GetComponent<Text>().color = Color.white;
