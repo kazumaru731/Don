@@ -14,6 +14,8 @@ namespace DonGame2D.UI
         public Button randomMatchButton;
         public Button friendMatchButton;   // フレンドマッチボタン
         public Button readyButton;         // ゲスト用Readyボタン
+        public Sprite readyCardSprite;     // ReadyボタンのカードUI用スプライト (Assets/Sprites/UI/ReadyButton.png)
+        public SelectionCard readySelectionCard; // Readyカード（Inspector から設定）
         public Button hostStartButton;     // ホスト用開始ボタン（新規追加）
         // legacy buttons removed: randomMatchBackButton, cpuBackButton
         public SelectionCard[] mainSelectionCards; // メインメニュー用カード
@@ -129,6 +131,8 @@ namespace DonGame2D.UI
             if (hostSelectionCards != null) foreach (var c in hostSelectionCards) if (c != null) { c.gameObject.SetActive(false); SetCardCallbacks(c, dropZone); }
             if (guestSelectionCards != null) foreach (var c in guestSelectionCards) if (c != null) { c.gameObject.SetActive(false); SetCardCallbacks(c, dropZone); }
             if (randomSelectionCards != null) foreach (var c in randomSelectionCards) if (c != null) { c.gameObject.SetActive(false); SetCardCallbacks(c, dropZone); }
+            // ReadyカードもSetCardCallbacksで初期化しておく（ShowReadyButton時に別途onSelectedを上書きする）
+            if (readySelectionCard != null) { readySelectionCard.gameObject.SetActive(false); SetCardCallbacks(readySelectionCard, dropZone); }
             
             // 最初のアニメーションは Start で行うため、ここでは表示設定のみ
             // ただしマッチング中はメインカードを表示しない
@@ -145,7 +149,7 @@ namespace DonGame2D.UI
             card.IsInDropZone = (pos) => (dropZone != null && dropZone.IsPositionInside(pos));
             card.OnSelectionStarted = (c) => {
                 string lowerId = (c.selectionId ?? "").ToLower(); // selectionId might be from callback or arg
-                bool isFunctionalCard = lowerId.Contains("start") || lowerId.Contains("cancel") || lowerId.Contains("back") || lowerId == "back";
+                bool isFunctionalCard = lowerId.Contains("start") || lowerId.Contains("cancel") || lowerId.Contains("back") || lowerId == "back" || lowerId.Contains("ready");
                 
                 if (!isFunctionalCard)
                 {
@@ -378,7 +382,7 @@ namespace DonGame2D.UI
             float angleRange = (count > 2) ? 18f : 12f; // Increased from 6f to 12f to prevent overlap
 
             float radius = 1900f;   
-            Vector2 pivot = new Vector2(0, -2250f); 
+            Vector2 pivot = new Vector2(0, -2450f); 
 
             // 2. Animate each card selectively
             for (int i = 0; i < count; i++)
@@ -407,8 +411,8 @@ namespace DonGame2D.UI
                     
                     string id = (card.selectionId ?? "").ToLower();
                     
-                    // 1/1 スプライト (Start/Cancel/Back/開始/キャンセル/戻る 等)
-                    bool isOneByOne = id.Contains("start") || id.Contains("cancel") || id.Contains("back");
+                    // 1/1 スプライト (Start/Cancel/Back/開始/キャンセル/戻る/Ready 等)
+                    bool isOneByOne = id.Contains("start") || id.Contains("cancel") || id.Contains("back") || id.Contains("ready");
 
                     // 1/2 スプライト (Host/Guest)
                     bool isHalf = id == "host" || id == "guest";
@@ -416,28 +420,42 @@ namespace DonGame2D.UI
                     if (isOneByOne)
                     {
                         // 1/1スプライト: ユーザーの調整値 (1.7, 1.25)
-                        // これで余白を含めたカード画像全体が他のカードと同じ視覚サイズになります
                         card.baseScale = new Vector3(1.7f, 1.25f, 1.0f);
                     }
                     else if (isHalf)
                     {
-                        // 1/2スプライト: 1/3スプライト(1.1)に合わせつつ、少しだけ幅を補正
+                        // 1/2スプライト: 1.15x1.1
                         card.baseScale = new Vector3(1.15f, 1.1f, 1.0f);
                     }
                     else
                     {
-                        // 1/3スプライト (Random/Friend/CPU/2-4 players): 
-                        // 基本の 1.1x 均等拡大
+                        // 1/3スプライト: 1.1x1.1
                         card.baseScale = new Vector3(1.1f, 1.1f, 1.0f);
                     }
                     
-                    // 実際には CPUマッチの「2,3,4 players」が 1.1x でちょうどよかったとのことなので、
-                    // それを基準に 1/1 が 1.7, 1.25 になるように逆算して整えます。
-                    // 最終的に 1.7, 1.25 (1/1) vs 1.1, 1.1 (1/3) という比率を維持します。
-                    
-                    // アスペクト比の設定: ユーザーのスケール調整値を活かすため、アスペクト比維持は false
+                    // アスペクト比と当たり判定の設定
                     var images = card.GetComponentsInChildren<UnityEngine.UI.Image>(true);
-                    foreach (var image in images) image.preserveAspect = false;
+                    foreach (var image in images) 
+                    {
+                        image.preserveAspect = false; // ユーザーのスケール調整値を活かすため false を維持
+
+                        // 当たり判定の最適化 (Raycast Padding)
+                        // 見た目を変えずに、透明部分の判定だけを内側に追い込む
+                        if (isOneByOne)
+                        {
+                            // 上下の空き (375-250)/2 = 62.5 を無効化
+                            image.raycastPadding = new Vector4(0, 62.5f, 0, 62.5f);
+                        }
+                        else
+                        {
+                            // 左右の空き (250-227.3)/2 = 11.35 を無効化
+                            image.raycastPadding = new Vector4(11.3f, 0, 11.3f, 0);
+                        }
+
+                        // アルファテストは Texture の Read/Write 設定が必要でエラーの原因となるため
+                        // 今回は Raycast Padding のみで当たり判定を制御する
+                        // image.alphaHitTestMinimumThreshold = 0.5f;
+                    }
 
                     rect.localScale = card.baseScale; 
                 }
@@ -505,6 +523,11 @@ namespace DonGame2D.UI
                         {
                             readyButton.interactable = (count >= 3);
                         }
+                        if (readySelectionCard != null)
+                        {
+                            // ドラッグだけは常に許可し、ドロップ時の OnReadyClicked で人数判定を行う
+                            readySelectionCard.isInteractable = true;
+                        }
                     }
                     else
                     {
@@ -561,7 +584,7 @@ namespace DonGame2D.UI
             if (cpuMatchButton != null) cpuMatchButton.gameObject.SetActive(false);
             
             HideAllCards();
-            animateCoroutine = StartCoroutine(Co_AnimateCards(randomSelectionCards));
+            // animateCoroutine = StartCoroutine(Co_AnimateCards(randomSelectionCards));
 
             if (playersCountText != null) playersCountText.text = "接続中...";
             if (readyButton != null) { readyButton.gameObject.SetActive(false); readyButton.interactable = false; }
@@ -909,11 +932,48 @@ namespace DonGame2D.UI
 
             if (isRandomMatch)
             {
-                if (readyButton != null)
+                // 既存readyButtonは使わず非表示に
+                if (readyButton != null) readyButton.gameObject.SetActive(false);
+
+                // まだカードが表示されていない場合、またはReadyカードを新しく出す場合に実行
+                if (!isReady)
                 {
-                    readyButton.gameObject.SetActive(true);
-                    readyButton.interactable = true;
+                    SelectionCard[] cardsToAnimate = randomSelectionCards;
+
+                    if (readySelectionCard != null)
+                    {
+                        // スプライトを差し替え
+                        var img = readySelectionCard.GetComponentInChildren<UnityEngine.UI.Image>();
+                        if (img != null && readyCardSprite != null)
+                        {
+                            img.sprite = readyCardSprite;
+                            img.preserveAspect = false;
+                            img.color = Color.white;
+                        }
+                        // 選択のコールバックを設定
+                        readySelectionCard.isInteractable = (DonFusionNetworkManager.Instance?.Runner?.ActivePlayers.Count() >= 3);
+                        readySelectionCard.OnCardDropped = null;
+                        readySelectionCard.OnCardDropped += (card) => OnReadyClicked();
+
+                        // [Ready, Cancel] の順でアニメーション（Readyが左、Cancelが右）
+                        var combined = new SelectionCard[1 + (randomSelectionCards?.Length ?? 0)];
+                        combined[0] = readySelectionCard;
+                        for (int i = 0; i < (randomSelectionCards?.Length ?? 0); i++)
+                            combined[i + 1] = randomSelectionCards[i];
+                        
+                        cardsToAnimate = combined;
+                    }
+
+                    // すでに表示済みかチェック（簡易的に一枚目のActive状態で判定）
+                    bool alreadyShown = cardsToAnimate != null && cardsToAnimate.Length > 0 && cardsToAnimate[0].gameObject.activeSelf;
+                    
+                    if (!alreadyShown)
+                    {
+                        if (animateCoroutine != null) StopCoroutine(animateCoroutine);
+                        animateCoroutine = StartCoroutine(Co_AnimateCards(cardsToAnimate, 0f));
+                    }
                 }
+
                 if (hostStartButton != null) hostStartButton.gameObject.SetActive(false);
             }
             else
@@ -1035,11 +1095,43 @@ namespace DonGame2D.UI
         {
             if (!isMatching || isReady) return;
 
+            var runner = DonFusionNetworkManager.Instance?.Runner;
+            if (runner != null)
+            {
+                int playerCount = runner.ActivePlayers.Count();
+                if (playerCount < 3)
+                {
+                    Debug.Log($"[TitleUI] Cannot ready: count {playerCount} < 3");
+                    // 3人未満の場合は元の位置に戻す
+                    if (readySelectionCard != null) readySelectionCard.FlyBack(false);
+                    return;
+                }
+            }
+
             isReady = true;
             if (readyButton != null)
             {
                 readyButton.interactable = false;
-                readyButton.GetComponentInChildren<Text>().text = "Waiting...";
+                // テキスト子要素があれば非表示に
+                var txt = readyButton.GetComponentInChildren<Text>();
+                if (txt != null) txt.text = "";
+
+                // カードを薄くしてWaiting状態を表現
+                var img = readyButton.GetComponent<UnityEngine.UI.Image>();
+                if (img != null)
+                {
+                    var c = img.color;
+                    c.a = 0.5f;
+                    img.color = c;
+                }
+            }
+
+            // SelectionCard版のReady表示対応
+            if (readySelectionCard != null)
+            {
+                readySelectionCard.isInteractable = false;
+                var cg = readySelectionCard.GetComponent<CanvasGroup>();
+                if (cg != null) cg.alpha = 0.5f;
             }
 
             if (DonGame2D.Logic.DonFusionManager2D.Instance != null)
@@ -1048,10 +1140,42 @@ namespace DonGame2D.UI
             }
         }
 
+        /// <summary>readyButtonのImageとサイズを選択カードと統一する</summary>
+        private void ApplyReadyCardStyle(Button btn)
+        {
+            if (btn == null) return;
+
+            // 既存テキストを非表示
+            var txt = btn.GetComponentInChildren<Text>();
+            if (txt != null) txt.text = "";
+
+            // 既存ImageをReadyButtonスプライトに差し替え
+            var img = btn.GetComponent<UnityEngine.UI.Image>();
+            if (img != null && readyCardSprite != null)
+            {
+                img.sprite = readyCardSprite;
+                img.preserveAspect = false;
+                img.color = Color.white;
+            }
+
+            // 他の1/1選択カードと同じサイズ・スケールに統一 (250x375, scale 1.7/1.25)
+            var rt = btn.GetComponent<RectTransform>();
+            if (rt != null)
+            {
+                rt.sizeDelta = new Vector2(250f, 375f);
+                rt.localScale = new Vector3(1.7f, 1.25f, 1.0f);
+            }
+        }
+
         public void SwitchToGameUI()
         {
             if (titleCanvasObj != null) titleCanvasObj.SetActive(false);
-            if (gameCanvasObj != null) gameCanvasObj.SetActive(true);
+            if (gameCanvasObj != null) 
+            {
+                gameCanvasObj.SetActive(true);
+                // 修正: スケールが0になって表示されない問題を解決
+                gameCanvasObj.transform.localScale = Vector3.one;
+            }
         }
 
         private void OnCpuAddClicked()

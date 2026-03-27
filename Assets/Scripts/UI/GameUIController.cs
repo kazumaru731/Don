@@ -39,6 +39,8 @@ namespace DonGame2D.UI
 
         [Header("Round UI")]
         public Text roundText; // 左上のラウンド表示用
+        public GameObject creditCardObject; // 右上のクレジットカードUI用
+        public Text creditText; // クレジット数値表示用
 
 
         [Header("Animation")]
@@ -59,6 +61,12 @@ namespace DonGame2D.UI
         public GameObject opponentInfoPrefab;
         public Dictionary<int, OpponentUIInfo> opponentUIs = new Dictionary<int, OpponentUIInfo>();
 
+        [Header("Final Result")]
+        public GameObject finalResultPanel;
+        public Transform finalResultContainer;
+        public GameObject finalResultEntryPrefab;
+        public Button finalResultBackButton;
+
         [Header("System")]
         public bool useFusion = true; // Fusion2を利用するかどうか
 
@@ -74,9 +82,10 @@ namespace DonGame2D.UI
         private bool hasSubscribedToFusion = false;
         private bool isDonButtonSetup = false; // Donボタンの初期化完了フラグ
         
-private bool isDealingAnimationRunning = false; // 配布アニメーション中フラグ
+        private bool isDealingAnimationRunning = false; // 配布アニメーション中フラグ
         private Queue<CardInfo> pendingDrawAnimations = new Queue<CardInfo>(); // アニメーション待ちキュー
         private int inFlightAnimationCount = 0; // Dequeue済みでアニメーション中のカード枚数
+        private List<CardUI> animatingDrawCards = new List<CardUI>(); // 進行中のドロー演出用カード
 
         public bool IsInteractionBlocked => isDealingAnimationRunning || IsScatterAnimationRunning || (scoreAnimationController != null && scoreAnimationController.IsAnimating);
 
@@ -178,6 +187,22 @@ private bool isDealingAnimationRunning = false; // 配布アニメーション�
                 if (suitButtons[3] != null) { PrepareSuitButton(suitButtons[3], OnClubsClicked); }
             }
 
+            // --- 最終リザルトUIの自動取得 ---
+            if (finalResultPanel == null) {
+                // GameObject.Findは非アクティブなオブジェクトを見つけられないため、全表示オブジェクトから検索
+                foreach (var go in Resources.FindObjectsOfTypeAll<GameObject>()) {
+                    if (go.name == "FinalResultPanel") {
+                        finalResultPanel = go;
+                        var t = go.transform.Find("FRP_ListContainer");
+                        if (t != null) finalResultContainer = t;
+                        var bt = go.transform.Find("FRP_BackButton");
+                        if (bt != null) finalResultBackButton = bt.GetComponent<Button>();
+                        Debug.Log("[Don] FinalResultPanel linked successfully.");
+                        break;
+                    }
+                }
+            }
+
             // --- レイアウトの自動調整 (扇状配置対応) ---
             if (opponentInfoContainer != null)
             {
@@ -195,7 +220,6 @@ private bool isDealingAnimationRunning = false; // 配布アニメーション�
                 }
             }
         }
-
         private void PrepareSuitButton(Button btn, UnityEngine.Events.UnityAction action)
         {
             btn.onClick.RemoveAllListeners();
@@ -341,84 +365,88 @@ private bool isDealingAnimationRunning = false; // 配布アニメーション�
             else
             {
                 statusText.color = Color.white;
-                if (fm.IsWaitingForDonGaeshi)
+                if (!fm.IsRoundOver)
                 {
-                    if (fm.DonTargetActorId == localActorId)
-                    {
-                        statusText.text = "Don-Gaeshi Chance!";
-                    }
+                    if (isMyTurn) statusText.text = "Your Turn";
                     else
                     {
-                        statusText.text = "Waiting for Don-Gaeshi...";
+                        var current = fm.GetActor(fm.CurrentTurnPlayerActorId);
+                        string actorName = current.IsActive ? (current.IsCPU ? "CPU " : "Player ") + current.ActorId : "Opponent";
+                        statusText.text = $"{actorName}'s Turn";
                     }
-                }
-                else if (fm.RoundEndTimer.IsRunning)
-                {
-                    statusText.text = "Starting Next Round... (" + Mathf.CeilToInt(fm.RoundEndTimer.RemainingTime(fm.Runner) ?? 0f) + "s)";
-                }
-                else
-                {
-                    statusText.text = isMyTurn ? "Your Turn" : "Opponent's Turn";
                 }
             }
 
-            if (fm.PlayerCredits.TryGet(localActorId, out var credits)) { } else credits = 0;
+            int myCredits = fm.PlayerCredits.ContainsKey(localActorId) ? fm.PlayerCredits[localActorId] : 0;
+            penaltyText.text = $"RD {fm.CurrentRound}/5";
+            if (fm.DrawPenaltyCount > 0) penaltyText.text += $" | Penalty: +{fm.DrawPenaltyCount}";
             
-            if (roundText != null)
-            {
-                roundText.text = $"{fm.CurrentRound}/5";
-                if (roundText.transform.parent != null && !roundText.transform.parent.gameObject.activeSelf)
-                {
+            if (creditText != null) {
+                creditText.text = myCredits.ToString();
+            }
+            if (creditCardObject != null && !creditCardObject.activeSelf) {
+                creditCardObject.SetActive(true);
+            }
+            
+            if (roundText != null) {
+                if (roundText.transform.parent != null && !roundText.transform.parent.gameObject.activeSelf) {
                     roundText.transform.parent.gameObject.SetActive(true);
                 }
-
-                string scoreInfo = $"{credits} Credits";
-                if (fm.DrawPenaltyCount > 0) scoreInfo += $" | Penalty: +{fm.DrawPenaltyCount}";
-                penaltyText.text = scoreInfo;
-            }
-            else
-            {
-                string scoreInfo = $"RD {fm.CurrentRound}/5 | {credits} Credits";
-                if (fm.DrawPenaltyCount > 0) scoreInfo += $" | Penalty: +{fm.DrawPenaltyCount}";
-                penaltyText.text = scoreInfo;
+                roundText.text = $"{fm.CurrentRound}/5";
             }
 
-            if (fm.IsRoundOver && resultPanel != null && resultPanel.activeSelf)
-            {
-                var btn = resultPanel.GetComponentInChildren<Button>();
-                if (btn != null)
-                {
-                    var btnText = btn.GetComponentInChildren<Text>();
-                    if (btnText != null && fm.RoundEndTimer.IsRunning)
-                    {
-                        int remain = Mathf.CeilToInt(fm.RoundEndTimer.RemainingTime(fm.Runner) ?? 0f);
-                        btnText.text = fm.CurrentRound >= 5 ? "GAME OVER" : $"NEXT ROUND ({remain}s)";
-                    }
-                }
-            }
+            drawButton.interactable = isMyTurn && !fm.IsRoundOver && !IsInteractionBlocked;
 
-            if (discardDonButton != null)
+            Button targetDonButton = discardDonButton;
+            if (targetDonButton != null)
             {
                 bool canDon = false;
-                if (!fm.IsRoundOver && fm.DiscardCount > 0 && localActorId != -1)
+                int myTotal = 0;
+                if (!fm.IsRoundOver)
                 {
-                    var topCard = fm.DiscardPile.Get(fm.DiscardCount - 1);
-                    int myTotal = 0;
-                    foreach (var c in fm.myLocalHand) myTotal += c.Rank;
-
-                    if (fm.IsWaitingForDonGaeshi)
-                    {
-                        if (fm.DonTargetActorId == localActorId && myTotal == topCard.Rank) canDon = true;
+                    bool isDonAllowedRound = true;
+                    // 他の人がDonしていても自分もDon可能にする。自分が既にDon宣言済みかチェック
+                    bool alreadyDonned = false;
+                    for (int i = 0; i < fm.DonCallersCount; i++) {
+                        if (fm.DonCallerActorIds.Get(i) == localActorId) alreadyDonned = true;
                     }
-                    else
+
+                    if (isDonAllowedRound && !alreadyDonned)
                     {
-                        if (fm.LastPlayedPlayerActorId != localActorId && myTotal == topCard.Rank && myTotal <= 13) canDon = true;
+                        myTotal = 0;
+                        foreach (var c in fm.myLocalHand) myTotal += c.Rank;
+
+                        // UIアニメーションの遅延に影響されないよう、NetworkArrayの最新の捨て札を直接参照
+                        int currentTopCardRank = 0;
+                        if (fm.DiscardCount > 0) {
+                            currentTopCardRank = fm.DiscardPile.Get(fm.DiscardCount - 1).Rank;
+                        }
+
+                        // 捨て札と手札合計が一致した場合のみ Don 可能 (Match Don)
+                        bool canMatchDon = false;
+                        if (currentTopCardRank > 0)
+                        {
+                            canMatchDon = (myTotal == currentTopCardRank && myTotal <= 13);
+                        }
+
+                        if (fm.IsWaitingForDonGaeshi)
+                        {
+                            // ドン返し：ターゲットになっており、かつ合計値が捨て札（＝相手のあがり値）と一致
+                            if (currentTopCardRank > 0)
+                            {
+                                if (fm.DonTargetActorId == localActorId && myTotal == currentTopCardRank) canDon = true;
+                            }
+                        }
+                        else
+                        {
+                            if (canMatchDon) canDon = true;
+                        }
                     }
                 }
 
                 if (canDon)
                 {
-                    var rt = discardDonButton.GetComponent<RectTransform>();
+                    var rt = targetDonButton.GetComponent<RectTransform>();
                     if (rt != null)
                     {
                         if (playerHandContainer != null && rt.parent != playerHandContainer.parent)
@@ -433,7 +461,7 @@ private bool isDealingAnimationRunning = false; // 配布アニメーション�
                         rt.sizeDelta = new Vector2(600, 200);
                         rt.SetAsLastSibling();
                         
-                        var txt = discardDonButton.GetComponentInChildren<Text>();
+                        var txt = targetDonButton.GetComponentInChildren<Text>();
                         if (txt != null)
                         {
                             txt.fontSize = 80;
@@ -442,25 +470,48 @@ private bool isDealingAnimationRunning = false; // 配布アニメーション�
                             txt.text = "DON!";
                         }
 
-                        var img = discardDonButton.GetComponent<Image>();
+                        var img = targetDonButton.GetComponent<Image>();
                         if (img != null)
                         {
                             img.color = new Color(1f, 0.84f, 0f, 1f);
                         }
                     }
                 }
+                
+                // --- 修正：シンプルなロジックに戻し、デバッグログを追加 ---
+                bool serverCanDon = fm.IsDonWindowOpen || fm.IsWaitingForDonGaeshi;
+                if (serverCanDon && !canDon) {
+                    Debug.Log($"[DonDebug] LocalTotal={myTotal}, TargetRank={lastTopCardRank}, IsOver={fm.IsRoundOver}, Discard={fm.DiscardCount}, IsOpen={fm.IsDonWindowOpen}, IsGaeshi={fm.IsWaitingForDonGaeshi}");
+                }
 
-                discardDonButton.gameObject.SetActive(canDon);
-                discardDonButton.interactable = canDon && !IsInteractionBlocked;
+                // 基本的にサーバーの窓口が開いているなら表示するが、自分が最後に出したカードにはドンできない（ドン返し以外）
+                bool finalCanShow = canDon;
+                if (fm.IsRoundOver) finalCanShow = false;
+
+                targetDonButton.gameObject.SetActive(finalCanShow);
+                // 他プレイヤーのDon演出中（IsScatterAnimationRunning）でも、自身がDon可能ならボタンを有効にする
+                bool blockForDon = isDealingAnimationRunning || (scoreAnimationController != null && scoreAnimationController.IsAnimating);
+                targetDonButton.interactable = canDon && !blockForDon;
             }
 
             UpdateFusionDiscardPileUI();
 
             if (fm.IsRoundOver)
             {
-                resultPanel.SetActive(true);
-                string winnerName = (fm.WinnerActorId != -1) ? $"Player {fm.WinnerActorId}" : "Someone";
-                resultText.text = $"{winnerName} Wins!";
+                // 最終リザルト表示中は通常のパネルを表示しない
+                if (finalResultPanel == null || !finalResultPanel.activeSelf)
+                {
+                    if (resultPanel != null) {
+                        resultPanel.SetActive(true);
+                        resultPanel.transform.SetAsLastSibling(); // 最前面に持ってくる
+                    }
+                    string winnerName = (fm.WinnerActorId != -1) ? $"Player {fm.WinnerActorId}" : "Someone";
+                    resultText.text = $"{winnerName} Wins!";
+                }
+                else
+                {
+                    if (resultPanel != null) resultPanel.SetActive(false);
+                }
             }
             else
             {
@@ -480,6 +531,8 @@ private bool isDealingAnimationRunning = false; // 配布アニメーション�
             var fm = DonFusionManager2D.Instance;
             if (fm == null || opponentInfoContainer == null || opponentInfoPrefab == null) return;
             if (fm.Runner == null || !fm.Runner.IsRunning) return;
+            // アニメーション実行中は位置調整等を行わせないようにする (チラつき防止)
+            if (scoreAnimationController != null && scoreAnimationController.IsAnimating) return;
 
             int localActorId = -1;
             for (int i = 0; i < 4; i++)
@@ -602,6 +655,10 @@ private bool isDealingAnimationRunning = false; // 配布アニメーション�
         {
             var fm = DonFusionManager2D.Instance;
             
+            // スコア演出中は手札の更新（および新規ドローアニメの開始）を完全に止める
+            if (scoreAnimationController != null && scoreAnimationController.IsAnimating)
+                return;
+
             if (!skipAnimation && playerHandUI.Count > 0 && deckPileContainer != null)
             {
                 int currentTotalShowing = playerHandUI.Count + inFlightAnimationCount + pendingDrawAnimations.Count;
@@ -652,6 +709,25 @@ private bool isDealingAnimationRunning = false; // 配布アニメーション�
                 rt.pivot = source.pivot;
                 rt.anchoredPosition = source.anchoredPosition;
                 rt.sizeDelta = source.sizeDelta;
+            }
+
+            // コンテナ幅を常にCanvas横幅の90%に強制設定（手札増枚時に縮まないための根本修正）
+            {
+                Canvas c = null;
+                if (playerHandContainer != null) c = playerHandContainer.GetComponentInParent<Canvas>();
+                if (c == null) c = FindObjectOfType<Canvas>();
+                if (c != null)
+                {
+                    var canvasRT = c.GetComponent<RectTransform>();
+                    if (canvasRT != null && canvasRT.rect.width > 0)
+                    {
+                        float targetW = canvasRT.rect.width * 0.90f;
+                        var handRT = playerHandContainer?.GetComponent<RectTransform>();
+                        if (handRT != null) { handRT.sizeDelta = new Vector2(targetW, handRT.sizeDelta.y); }
+                        var hvRT = (handVisualParent as RectTransform) ?? handVisualParent?.GetComponent<RectTransform>();
+                        if (hvRT != null) { hvRT.sizeDelta = new Vector2(targetW, hvRT.sizeDelta.y); }
+                    }
+                }
             }
 
             while (dummySlots.Count < myHand.Count)
@@ -734,43 +810,91 @@ private bool isDealingAnimationRunning = false; // 配布アニメーション�
             Canvas.ForceUpdateCanvases();
 
             int count = playerHandUI.Count;
-            float fanAngleSpan = Mathf.Min(count * 6f, 45f); // Increased from 5f/30f to spread more
+            if (count == 0) yield break;
+
+            // Canvas横幅の90%を手札エリアの幅として使用（LayoutGroup / RectTransformサイズに依存しない）
+            float totalWidth = 900f;
+            Canvas canvas = null;
+            if (playerHandContainer != null) canvas = playerHandContainer.GetComponentInParent<Canvas>();
+            if (canvas == null) canvas = FindObjectOfType<Canvas>();
+            if (canvas != null)
+            {
+                var cRT = canvas.GetComponent<RectTransform>();
+                if (cRT != null && cRT.rect.width > 0)
+                {
+                    // 両端に100pxずつパディング（計200px）を確保することで、端のカードの操作性向上と画面のはみ出しを防止
+                    const float sidePadding = 100f;
+                    totalWidth = cRT.rect.width * 0.90f - sidePadding * 2f;
+                }
+            }
+
+            // 扇状配置のパラメータ（カード増加で角度がつきすぎないよう制限）
+            float fanAngleSpan = Mathf.Min(count * 3f, 25f);
             float startAngle = fanAngleSpan / 2f;
             float angleStep = count > 1 ? fanAngleSpan / (count - 1) : 0f;
-            float radius = 800f; // Increased from 500f for a gentler curve
+            float radius = 1500f;
+
+            // カード間隔を計算：基本は固定間隔を維持し、画面を超える場合のみ縮小する
+            const float defaultSpacing = 150f; // 標準の1枚あたりの間隔
+            float maxSpacing = count > 1 ? totalWidth / (count - 1) : defaultSpacing;
+            float spacing = Mathf.Min(defaultSpacing, maxSpacing);
+            float actualSpan = spacing * (count - 1); // 実際に使う横幅
+
+            // 基準位置: playerHandContainerのワールド座標を中心に使用
+            Vector3 centerWorld = playerHandContainer != null 
+                ? playerHandContainer.position 
+                : Vector3.zero;
+            float scale = playerHandContainer != null 
+                ? playerHandContainer.lossyScale.y 
+                : 1f;
 
             for (int i = 0; i < playerHandUI.Count; i++)
             {
-                if (i < dummySlots.Count && dummySlots[i] != null)
-                {
-                    if (!playerHandUI[i].IsDragging)
-                    {
-                        Vector3 basePos = dummySlots[i].transform.position;
-                        float currentAngle = startAngle - (i * angleStep);
-                        float rad = currentAngle * Mathf.Deg2Rad;
-                        float yOffsetLocal = Mathf.Cos(rad) * radius - radius;
-                        float yOffsetWorld = 0f;
-                        if (playerHandContainer != null) {
-                            yOffsetWorld = yOffsetLocal * playerHandContainer.lossyScale.y;
-                        }
+                if (playerHandUI[i] == null || playerHandUI[i].IsDragging) continue;
 
-                        if (playerHandUI[i] != null) {
-                            playerHandUI[i].SmoothMoveAndRotateTo(
-                                basePos + new Vector3(0, yOffsetWorld, 0),
-                                Quaternion.Euler(0, 0, currentAngle)
-                            );
-                        }
-                    }
-                }
+                float currentAngle = startAngle - (i * angleStep);
+                float rad = currentAngle * Mathf.Deg2Rad;
+                float yOffsetLocal = Mathf.Cos(rad) * radius - radius;
+                float yOffsetWorld = yOffsetLocal * scale;
+
+                // X位置: 中心から均等に振り分け
+                float xLocal = -actualSpan / 2f + spacing * i;
+                float xWorld = xLocal * scale;
+
+                Vector3 targetPos = new Vector3(
+                    centerWorld.x + xWorld,
+                    centerWorld.y + yOffsetWorld,
+                    centerWorld.z
+                );
+
+                playerHandUI[i].SmoothMoveAndRotateTo(
+                    targetPos,
+                    Quaternion.Euler(0, 0, currentAngle)
+                );
             }
         }
 
         private float CalcSlotWidth(int cardCount)
         {
-            const float containerWidth = 950f; // Increased from 700f to utilize ~80% of width
+            float containerWidth = 1920f * 0.9f;
+            Canvas canvas = null;
+            if (playerHandContainer != null) canvas = playerHandContainer.GetComponentInParent<Canvas>();
+            if (canvas == null) canvas = FindObjectOfType<Canvas>();
+
+            if (canvas != null)
+            {
+                var canvasRT = canvas.GetComponent<RectTransform>();
+                if (canvasRT != null && canvasRT.rect.width > 0)
+                {
+                    // 必ず全幅の90%を使うようにする
+                    containerWidth = canvasRT.rect.width * 0.9f;
+                }
+            }
+
             const float cardVisualWidth = 100f;
-            const float maxSlotWidth = 180f; // Increased from 160f for more space with few cards
-            const float minSlotWidth = 65f; // Slightly increased from 55f
+            const float maxSlotWidth = 180f; 
+            // カードが増えすぎても選択できるように、最低でも45pxは間隔を確保する
+            const float minSlotWidth = 45f;
             if (cardCount <= 1) return maxSlotWidth;
             float neededWidth = (containerWidth - cardVisualWidth) / (cardCount - 1);
             return Mathf.Clamp(neededWidth, minSlotWidth, maxSlotWidth);
@@ -880,7 +1004,8 @@ private bool isDealingAnimationRunning = false; // 配布アニメーション�
                 Transform canvasTransform = playerHandContainer.GetComponentInParent<Canvas>().transform;
                 GameObject go = Instantiate(cardPrefab, canvasTransform);
                 CardUI ui = go.GetComponent<CardUI>();
-                ui.SetupFusion(cardToAnimate, true); // 最初から表向きに表示
+                animatingDrawCards.Add(ui);
+                ui.SetupFusion(cardToAnimate, true);
                 Vector3 startPos = deckPileContainer.position;
                 ui.transform.position = startPos;
                 ui.transform.localScale = Vector3.one;
@@ -891,6 +1016,16 @@ private bool isDealingAnimationRunning = false; // 配布アニメーション�
 
                 while (elapsed < duration)
                 {
+                    // 途中でスコア演出が始まったら中止して破棄
+                    if (scoreAnimationController != null && scoreAnimationController.IsAnimating)
+                    {
+                        if (go != null) Destroy(go);
+                        animatingDrawCards.Remove(ui);
+                        inFlightAnimationCount--;
+                        pendingDrawAnimations.Clear();
+                        isDealingAnimationRunning = false;
+                        yield break;
+                    }
                     elapsed += Time.deltaTime;
                     float t = elapsed / duration;
                     float easeOutT = 1f - Mathf.Pow(1f - t, 3f);
@@ -899,8 +1034,12 @@ private bool isDealingAnimationRunning = false; // 配布アニメーション�
                 }
 
                 if (dummyObj != null) Destroy(dummyObj);
-                playerHandUI.Add(ui);
-                ui.transform.SetAsLastSibling();
+                if (ui != null)
+                {
+                    playerHandUI.Add(ui);
+                    animatingDrawCards.Remove(ui);
+                    ui.transform.SetAsLastSibling();
+                }
                 inFlightAnimationCount--;
                 yield return new WaitForSeconds(0.1f);
             }
@@ -1050,7 +1189,11 @@ private bool isDealingAnimationRunning = false; // 配布アニメーション�
             {
                 ui.transform.localPosition = Vector3.zero; ui.isDiscarded = true; ui.SetupFusion(topCard, true);
                 var fm = DonFusionManager2D.Instance;
-                if (fm != null) { lastDiscardPileCount = fm.DiscardCount; lastTopCardSuit = topCard.Suit; lastTopCardRank = topCard.Rank; lastActiveSuitInt = fm.ActiveSuitInt; }
+                if (fm != null) { 
+                    lastDiscardPileCount = fm.DiscardCount; lastTopCardSuit = topCard.Suit; lastTopCardRank = topCard.Rank; lastActiveSuitInt = fm.ActiveSuitInt; 
+                    // カード情報の変化をトリガーにUI状態（Donボタン表示等）を強制更新
+                    UpdateFusionUIState();
+                }
             }
         }
 
@@ -1111,21 +1254,338 @@ private bool isDealingAnimationRunning = false; // 配布アニメーション�
 
         public void ShowRoundResult(string msg, bool isFinal)
         {
+            if (isFinal)
+            {
+                ShowFinalResult();
+                return;
+            }
+
             if (resultPanel == null || resultText == null) return;
-            resultText.text = msg; resultPanel.SetActive(true);
+            
+            // レイアウト調整
+            var rt = resultPanel.GetComponent<RectTransform>();
+            if (rt != null) {
+                rt.anchorMin = Vector2.zero; rt.anchorMax = Vector2.one;
+                rt.sizeDelta = Vector2.zero; rt.localScale = Vector3.one;
+            }
+
+            var fontFallback = mainFontRegular ?? Resources.GetBuiltinResource<Font>("Arial.ttf");
+            resultText.font = fontFallback;
+            resultText.fontSize = 50;
+            resultText.color = Color.white;
+            resultText.alignment = TextAnchor.MiddleCenter;
+            resultText.text = msg;
+
+            // レイアウト保証: テキストコンポーネントを全画面（若干のマージン）に広げる
+            var textRt = resultText.GetComponent<RectTransform>();
+            if (textRt != null)
+            {
+                textRt.anchorMin = new Vector2(0.05f, 0.05f);
+                textRt.anchorMax = new Vector2(0.95f, 0.95f);
+                textRt.pivot = new Vector2(0.5f, 0.5f);
+                textRt.offsetMin = Vector2.zero;
+                textRt.offsetMax = Vector2.zero;
+            }
+            resultText.horizontalOverflow = HorizontalWrapMode.Overflow;
+            resultText.verticalOverflow = VerticalWrapMode.Overflow;
+
+            // シャドウの追加（視認性向上）
+            if (resultText.GetComponent<Shadow>() == null) resultText.gameObject.AddComponent<Shadow>().effectColor = new Color(0,0,0,0.5f);
+
+            resultPanel.SetActive(true);
+            
             var btn = resultPanel.GetComponentInChildren<Button>();
             if (btn != null)
             {
+                var btnImg = btn.GetComponent<Image>();
+                if (btnImg != null) btnImg.color = new Color(0.2f, 0.2f, 0.2f, 0.9f);
+
                 var btnText = btn.GetComponentInChildren<Text>();
-                if (btnText != null) btnText.text = isFinal ? "GAME OVER (EXIT)" : "START NEXT ROUND";
+                if (btnText != null) {
+                    btnText.text = "START NEXT ROUND";
+                    btnText.font = fontFallback;
+                    btnText.fontSize = 40;
+                    btnText.color = Color.white;
+                }
                 btn.onClick.RemoveAllListeners();
                 btn.onClick.AddListener(() => {
                     if (useFusion && DonFusionManager2D.Instance != null) {
-                        if (isFinal) UnityEngine.SceneManagement.SceneManager.LoadScene(UnityEngine.SceneManagement.SceneManager.GetActiveScene().name);
-                        else { DonFusionManager2D.Instance.RPC_RequestNextRound(); resultPanel.SetActive(false); if (revealedHandContainer != null) foreach (Transform child in revealedHandContainer) Destroy(child.gameObject); }
+                        DonFusionManager2D.Instance.RPC_RequestNextRound(); 
+                        resultPanel.SetActive(false); 
+                        if (revealedHandContainer != null) foreach (Transform child in revealedHandContainer) Destroy(child.gameObject);
                     }
                 });
             }
+        }
+
+        private void ShowFinalResult()
+        {
+            Debug.Log("[Don] ShowFinalResult called.");
+            if (finalResultPanel == null)
+            {
+                Debug.LogError("[Don] finalResultPanel is not assigned! Attempting to find again...");
+                foreach (var go in Resources.FindObjectsOfTypeAll<GameObject>()) {
+                    if (go.name == "FinalResultPanel") {
+                        finalResultPanel = go;
+                        finalResultContainer = go.transform.Find("FRP_ListContainer");
+                        finalResultBackButton = go.transform.Find("FRP_BackButton")?.GetComponent<Button>();
+                        break;
+                    }
+                }
+                
+                if (finalResultPanel == null) {
+                    Debug.LogError("[Don] Still could not find FinalResultPanel!");
+                    return;
+                }
+            }
+
+            // レイアウト調整
+            var panelRT = finalResultPanel.GetComponent<RectTransform>();
+            if (panelRT != null) {
+                panelRT.anchorMin = Vector2.zero; panelRT.anchorMax = Vector2.one;
+                panelRT.sizeDelta = Vector2.zero; panelRT.localScale = Vector3.one;
+            }
+
+            // 親パネルのレイアウト制約を解除（子要素を自由に配置するため）
+            var pVLG = finalResultPanel.GetComponent<LayoutGroup>();
+            if (pVLG != null) Destroy(pVLG);
+            var pCSF = finalResultPanel.GetComponent<ContentSizeFitter>();
+            if (pCSF != null) Destroy(pCSF);
+
+            // 通常のリザルトパネルを閉じる
+            if (resultPanel != null) resultPanel.SetActive(false);
+            if (revealedHandContainer != null) foreach (Transform child in revealedHandContainer) Destroy(child.gameObject);
+
+            // リザルトエントリをクリア
+            if (finalResultContainer != null)
+            {
+                foreach (Transform child in finalResultContainer) Destroy(child.gameObject);
+                
+                // コンテナのレイアウト設定
+                var vlg = finalResultContainer.GetComponent<VerticalLayoutGroup>();
+                if (vlg == null) vlg = finalResultContainer.gameObject.AddComponent<VerticalLayoutGroup>();
+                vlg.childControlHeight = false; vlg.childControlWidth = true;
+                vlg.childForceExpandHeight = false; vlg.childForceExpandWidth = true;
+                vlg.spacing = 20; vlg.padding = new RectOffset(50, 50, 50, 50);
+                vlg.childAlignment = TextAnchor.UpperCenter;
+
+                var csf = finalResultContainer.GetComponent<ContentSizeFitter>();
+                if (csf == null) csf = finalResultContainer.gameObject.AddComponent<ContentSizeFitter>();
+                csf.verticalFit = ContentSizeFitter.FitMode.PreferredSize;
+                
+                var containerRT = finalResultContainer.GetComponent<RectTransform>();
+                if (containerRT != null) {
+                    containerRT.anchorMin = new Vector2(0.05f, 0.2f);
+                    containerRT.anchorMax = new Vector2(0.95f, 0.8f);
+                    containerRT.pivot = new Vector2(0.5f, 0.5f);
+                    containerRT.offsetMin = Vector2.zero;
+                    containerRT.offsetMax = Vector2.zero;
+                    containerRT.anchoredPosition = Vector2.zero;
+                    containerRT.sizeDelta = Vector2.zero;
+                }
+            }
+
+            finalResultPanel.SetActive(true);
+            finalResultPanel.transform.localScale = Vector3.one;
+
+            // 背景画像の設定 (play_background.PNG)
+            var bgImage = finalResultPanel.GetComponent<Image>();
+            if (bgImage != null)
+            {
+                bgImage.sprite = Resources.Load<Sprite>("Sprites/play_background");
+                if (bgImage.sprite == null) {
+                    var casinoBG = GameObject.Find("CasinoBackground")?.GetComponent<Image>();
+                    if (casinoBG != null) bgImage.sprite = casinoBG.sprite;
+                }
+                if (bgImage.sprite == null) bgImage.color = new Color(0.1f, 0.4f, 0.1f, 1f); // 濃い緑の代替色
+                else bgImage.color = Color.white;
+            }
+
+            var fontFallback = mainFontRegular;
+            if (fontFallback == null) fontFallback = mainFontBold;
+            if (fontFallback == null)
+            {
+                var anyText = GameObject.FindObjectOfType<Text>();
+                if (anyText != null) fontFallback = anyText.font;
+            }
+            if (fontFallback == null) fontFallback = Resources.GetBuiltinResource<Font>("Arial.ttf");
+
+            if (finalResultContainer != null) finalResultContainer.localScale = Vector3.one;
+            if (finalResultBackButton != null) {
+                finalResultBackButton.transform.localScale = Vector3.one;
+                var backRT = finalResultBackButton.GetComponent<RectTransform>();
+                if (backRT != null) {
+                    backRT.anchorMin = new Vector2(0.2f, 0.05f);
+                    backRT.anchorMax = new Vector2(0.8f, 0.15f);
+                    backRT.pivot = new Vector2(0.5f, 0.5f);
+                    backRT.offsetMin = Vector2.zero;
+                    backRT.offsetMax = Vector2.zero;
+                    backRT.anchoredPosition = Vector2.zero;
+                    backRT.sizeDelta = Vector2.zero;
+                }
+                var btnImg = finalResultBackButton.GetComponent<Image>();
+                if (btnImg != null) btnImg.color = new Color(0.2f, 0.2f, 0.2f, 0.9f);
+
+                var backText = finalResultBackButton.GetComponentInChildren<Text>();
+                if (backText != null) {
+                    backText.color = Color.white; backText.fontSize = 45;
+                    backText.font = fontFallback;
+                    backText.text = "タイトルに戻る";
+                    backText.horizontalOverflow = HorizontalWrapMode.Overflow;
+                    backText.verticalOverflow = VerticalWrapMode.Overflow;
+                    backText.transform.localScale = Vector3.one;
+                    if (backText.GetComponent<Shadow>() == null) backText.gameObject.AddComponent<Shadow>();
+                }
+            }
+
+            // タイトルの設定
+            var titleTrans = finalResultPanel.transform.Find("FRP_Title");
+            if (titleTrans != null) {
+                titleTrans.localScale = Vector3.one;
+                var titleRT = titleTrans.GetComponent<RectTransform>();
+                if (titleRT != null) {
+                    titleRT.anchorMin = new Vector2(0.1f, 0.85f);
+                    titleRT.anchorMax = new Vector2(0.9f, 0.95f);
+                    titleRT.pivot = new Vector2(0.5f, 0.5f);
+                    titleRT.offsetMin = Vector2.zero;
+                    titleRT.offsetMax = Vector2.zero;
+                    titleRT.anchoredPosition = Vector2.zero;
+                    titleRT.sizeDelta = Vector2.zero;
+                }
+                var titleText = titleTrans.GetComponent<Text>();
+                if (titleText != null) {
+                    titleText.color = Color.white; titleText.fontSize = 70;
+                    titleText.font = fontFallback;
+                    titleText.text = "最終結果";
+                    titleText.horizontalOverflow = HorizontalWrapMode.Overflow;
+                    titleText.verticalOverflow = VerticalWrapMode.Overflow;
+                    if (titleText.GetComponent<Shadow>() == null) titleText.gameObject.AddComponent<Shadow>().effectDistance = new Vector2(3,-3);
+                }
+            }
+
+            var fm = DonFusionManager2D.Instance;
+            if (fm == null) return;
+
+            // プレイヤーデータの集計
+            List<PlayerResultData> results = new List<PlayerResultData>();
+            for (int i = 0; i < 4; i++)
+            {
+                var actor = fm.Actors.Get(i);
+                if (!actor.IsActive) continue;
+                if (!fm.PlayerCredits.TryGet(actor.ActorId, out int credits)) credits = 0;
+
+                results.Add(new PlayerResultData
+                {
+                    ActorId = actor.ActorId,
+                    Credits = credits,
+                    IsLocal = (actor.ActorId == GetLocalActorId())
+                });
+            }
+
+            // クレジット順にソート（降順）
+            results = results.OrderByDescending(r => r.Credits).ToList();
+
+            // エントリ의生成
+            for (int i = 0; i < results.Count; i++)
+            {
+                if (finalResultContainer != null)
+                {
+                    GameObject go = null;
+                    FinalResultEntry entry = null;
+
+                    if (finalResultEntryPrefab != null)
+                    {
+                        go = Instantiate(finalResultEntryPrefab, finalResultContainer);
+                        entry = go.GetComponent<FinalResultEntry>();
+                    }
+                    else
+                    {
+                        // プレハブがない場合は動的に生成
+                        go = new GameObject("ResultEntry", typeof(RectTransform), typeof(Image), typeof(HorizontalLayoutGroup), typeof(FinalResultEntry));
+                        go.transform.SetParent(finalResultContainer, false);
+                        
+                        var entryBG = go.GetComponent<Image>();
+                        entryBG.color = new Color(0, 0, 0, 0.6f); // 半透明の黒背景
+
+                        var hlg = go.GetComponent<HorizontalLayoutGroup>();
+                        hlg.childControlWidth = true; hlg.childForceExpandWidth = true;
+                        hlg.childControlHeight = true; hlg.childForceExpandHeight = true;
+                        hlg.padding = new RectOffset(40, 40, 15, 15); hlg.spacing = 30;
+                        hlg.childAlignment = TextAnchor.MiddleCenter;
+
+                        var le = go.AddComponent<LayoutElement>();
+                        le.minHeight = 100f; le.preferredHeight = 120f;
+
+                        // ランク
+                        var rankObj = new GameObject("Rank", typeof(RectTransform), typeof(Text), typeof(Shadow));
+                        rankObj.transform.SetParent(go.transform, false);
+                        var rankTxt = rankObj.GetComponent<Text>();
+                        rankTxt.alignment = TextAnchor.MiddleCenter; rankTxt.fontSize = 50; rankTxt.font = fontFallback;
+                        rankTxt.color = (i == 0) ? Color.yellow : Color.white;
+                        rankTxt.horizontalOverflow = HorizontalWrapMode.Overflow;
+                        rankTxt.verticalOverflow = VerticalWrapMode.Overflow;
+                        rankObj.AddComponent<LayoutElement>().preferredWidth = 80;
+                        
+                        // 名前
+                        var nameObj = new GameObject("Name", typeof(RectTransform), typeof(Text), typeof(Shadow));
+                        nameObj.transform.SetParent(go.transform, false);
+                        var nameTxt = nameObj.GetComponent<Text>();
+                        nameTxt.alignment = TextAnchor.MiddleLeft; nameTxt.fontSize = 50; nameTxt.font = fontFallback;
+                        nameTxt.color = Color.white;
+                        nameTxt.horizontalOverflow = HorizontalWrapMode.Overflow;
+                        nameTxt.verticalOverflow = VerticalWrapMode.Overflow;
+                        nameObj.AddComponent<LayoutElement>().flexibleWidth = 1;
+                        
+                        // スコア
+                        var scoreObj = new GameObject("Score", typeof(RectTransform), typeof(Text), typeof(Shadow));
+                        scoreObj.transform.SetParent(go.transform, false);
+                        var scoreTxt = scoreObj.GetComponent<Text>();
+                        scoreTxt.alignment = TextAnchor.MiddleRight; scoreTxt.fontSize = 50; scoreTxt.font = fontFallback;
+                        scoreTxt.color = Color.white;
+                        scoreTxt.horizontalOverflow = HorizontalWrapMode.Overflow;
+                        scoreTxt.verticalOverflow = VerticalWrapMode.Overflow;
+                        scoreObj.AddComponent<LayoutElement>().preferredWidth = 250;
+
+                        entry = go.GetComponent<FinalResultEntry>();
+                        entry.rankText = rankTxt;
+                        entry.nameText = nameTxt;
+                        entry.scoreText = scoreTxt;
+                    }
+
+                    if (go != null)
+                    {
+                        go.transform.localScale = Vector3.one;
+                        if (entry == null) entry = go.GetComponent<FinalResultEntry>();
+                        if (entry != null)
+                        {
+                            entry.Setup(i + 1, (results[i].IsLocal ? "YOU" : $"Player {results[i].ActorId}"), results[i].Credits, results[i].IsLocal);
+                            foreach (var txt in go.GetComponentsInChildren<Text>(true)) {
+                                txt.transform.localScale = Vector3.one;
+                                txt.font = fontFallback;
+                                txt.horizontalOverflow = HorizontalWrapMode.Overflow;
+                                txt.verticalOverflow = VerticalWrapMode.Overflow;
+                                if (txt.GetComponent<Shadow>() == null) txt.gameObject.AddComponent<Shadow>();
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 戻るボタンの設定
+            if (finalResultBackButton != null)
+            {
+                finalResultBackButton.onClick.RemoveAllListeners();
+                finalResultBackButton.onClick.AddListener(() => {
+                    UnityEngine.SceneManagement.SceneManager.LoadScene(UnityEngine.SceneManagement.SceneManager.GetActiveScene().name);
+                });
+            }
+        }
+
+        private struct PlayerResultData
+        {
+            public int ActorId;
+            public int Credits;
+            public bool IsLocal;
         }
 
         public void PlayRoundEndAnimation(int winType, int winnerId, int loserId, int donValue, string loserHandStr, int totalPenalty, string resultMsg, bool isFinal, string winnerNames = "", string winnerHandStr = "")
@@ -1136,9 +1596,27 @@ private bool isDealingAnimationRunning = false; // 配布アニメーション�
 
         public void ClearHandUI(int actorId)
         {
-            if (actorId == GetLocalActorId()) { foreach (var cUI in playerHandUI) if (cUI != null) Destroy(cUI.gameObject); playerHandUI.Clear(); foreach (var d in dummySlots) if (d != null) Destroy(d); dummySlots.Clear(); }
-            else if (opponentUIs.TryGetValue(actorId, out var info) && info.cardIconContainer != null) foreach (Transform child in info.cardIconContainer) Destroy(child.gameObject);
+            if (actorId == GetLocalActorId())
+            {
+                foreach (var cUI in playerHandUI) if (cUI != null) Destroy(cUI.gameObject);
+                playerHandUI.Clear();
+                foreach (var d in dummySlots) if (d != null) Destroy(d);
+                dummySlots.Clear();
+                
+                // アニメーション中および待機中のカードも全て破棄
+                foreach (var c in animatingDrawCards) if (c != null) Destroy(c.gameObject);
+                animatingDrawCards.Clear();
+                pendingDrawAnimations.Clear();
+                inFlightAnimationCount = 0;
+                isDealingAnimationRunning = false;
+            }
+            else if (opponentUIs.TryGetValue(actorId, out var info) && info.cardIconContainer != null)
+            {
+                foreach (Transform child in info.cardIconContainer) Destroy(child.gameObject);
+            }
         }
+
+        public List<CardUI> GetAnimatingDrawCards() => animatingDrawCards;
 
         public void ShowDonAnimation(int actorId, string handData) 
         {

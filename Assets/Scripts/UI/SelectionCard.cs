@@ -212,7 +212,7 @@ namespace DonGame2D.UI
             if (canvasGroup != null) canvasGroup.alpha = 1f;
         }
 
-        public void FlyBack()
+        public void FlyBack(bool hideAtEnd = true)
         {
             isEnteringCenter = false;
             isFlyingBack = true;
@@ -223,11 +223,11 @@ namespace DonGame2D.UI
                 transform.SetParent(originalParent, false);
             }
 
-            gameObject.SetActive(true); // Ensure active to start coroutine
-            activeCoroutine = StartCoroutine(Co_FlyBack());
+            gameObject.SetActive(true);
+            activeCoroutine = StartCoroutine(Co_FlyBack(hideAtEnd));
         }
 
-        private IEnumerator Co_FlyBack()
+        private IEnumerator Co_FlyBack(bool hideAtEnd)
         {
             // Reset scale/alpha immediately just in case
             var canvasGroup = GetComponent<CanvasGroup>() ?? gameObject.AddComponent<CanvasGroup>();
@@ -262,7 +262,7 @@ namespace DonGame2D.UI
             }
             
             isFlyingBack = false;
-            gameObject.SetActive(false);
+            if (hideAtEnd) gameObject.SetActive(false);
         }
 
         public void SetBaseSortingOrder(int order)
