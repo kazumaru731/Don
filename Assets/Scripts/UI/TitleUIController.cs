@@ -49,13 +49,20 @@ namespace DonGame2D.UI
         public Button cpuAddButton;      // + ボタン
         public Button cpuRemoveButton;   // - ボタン
 
+        [Header("ラウンド設定 (フレンドマッチ用)")]
+        public GameObject roundSettingPanel;
+        public Text roundCountText;
+        public Button roundPlusButton;
+        public Button roundMinusButton;
+
         private int friendCpuCount = 0;  // フレンドマッチで追加する CPU 数
+        public static int pendingMaxRounds = 5; 
 
         [Header("State")]
         public bool isMatching = false;
         public bool isReady = false;
 
-        public static int selectedTargetPlayers = 4;
+        public static int selectedTargetPlayers = 8;
 
         private string generatedRoomId = "";
 
@@ -77,8 +84,7 @@ namespace DonGame2D.UI
             if (cpuMatchPanel != null) cpuMatchPanel.SetActive(false);
 
             friendCpuCount = 0;
-            if (cpuAddButton != null) cpuAddButton.interactable = false;
-            if (cpuRemoveButton != null) cpuRemoveButton.interactable = false;
+            // Removed manual interactable = false here to allow UpdateCpuCountLabel to control it
 
             if (cpuMatchButton == null)
             {
@@ -108,6 +114,14 @@ namespace DonGame2D.UI
 
             if (readyButton != null) { readyButton.onClick.AddListener(OnReadyClicked); readyButton.gameObject.SetActive(false); }
             if (hostStartButton != null) { hostStartButton.onClick.AddListener(OnHostStartClicked); hostStartButton.gameObject.SetActive(false); }
+
+            // 自動取得フォールバック（Inspectorで未設定の場合）
+            TryFindRoundSettingUI();
+
+            // リスナー設定
+            SetupRoundButtonListeners();
+
+            if (roundSettingPanel != null) roundSettingPanel.SetActive(false);
 
             hostCardsShown = false;
             InitializeCards();
@@ -213,7 +227,7 @@ namespace DonGame2D.UI
             hostCardsShown = false;
         }
 
-        private void HideAllCards()
+        private void HideAllCards(bool force = false)
         {
             if (animateCoroutine != null)
             {
@@ -227,53 +241,23 @@ namespace DonGame2D.UI
             {
                 if (c != null)
                 {
-                    // Skip cards that are part of the active selection stack OR currently animating back (Instance-specific protection)
-                    bool isInStack = selectedStack.Contains(c);
-                    if (isInStack || c.IsFlyingBack) 
+                    if (!force)
                     {
-                        c.gameObject.SetActive(true); // Ensure stack members are NEVER hidden here
-                        continue;
+                        // Skip cards that are part of the active selection stack OR currently animating back (Instance-specific protection)
+                        bool isInStack = selectedStack.Contains(c);
+                        if (isInStack || c.IsFlyingBack) 
+                        {
+                            c.gameObject.SetActive(true); // Ensure stack members are NEVER hidden here
+                            continue;
+                        }
                     }
 
+                    c.ResetCardState();
                     c.gameObject.SetActive(false);
-                    c.StopAllCoroutines();
-                }
-            }
-
-            // Robust panel management: Only hide panels if they don't contain cards needed by the stack
-            System.Action<GameObject> hidePanelSafe = (p) => {
-                if (p == null) return;
-                bool isNeeded = false;
-                foreach(var c in allCards) {
-                    bool isInStack = c != null && selectedStack.Contains(c);
-                    if (c != null && (isInStack || c.IsFlyingBack) && c.transform.IsChildOf(p.transform)) {
-                        isNeeded = true;
-                        break;
-                    }
-                }
-                if (!isNeeded) p.SetActive(false);
-            };
-
-            hidePanelSafe(friendMatchPanel);
-            hidePanelSafe(cpuMatchPanel);
-            hidePanelSafe(hostPanel);
-            hidePanelSafe(guestPanel);
-            
-            // Legacy/Extra container cleanup
-            var cpuContainer = GameObject.Find("CpuMatchPanel");
-            if (cpuContainer != null && cpuContainer != cpuMatchPanel) hidePanelSafe(cpuContainer);
-
-            // Re-ensure stack members are visible and correctly positioned
-            UpdateStackPositions();
-
-            // Main Menu cards: Only visible if NOT matching
-            bool showMain = !isMatching && selectedStack.Count == 0;
-            if (mainSelectionCards != null) {
-                foreach(var c in mainSelectionCards) {
-                    if (c != null && !selectedStack.Contains(c)) c.gameObject.SetActive(showMain);
                 }
             }
         }
+
 
         private void UpdateStackPositions()
         {
@@ -382,7 +366,7 @@ namespace DonGame2D.UI
             float angleRange = (count > 2) ? 18f : 12f; // Increased from 6f to 12f to prevent overlap
 
             float radius = 1900f;   
-            Vector2 pivot = new Vector2(0, -2450f); 
+            Vector2 pivot = new Vector2(0, -2650f); 
 
             // 2. Animate each card selectively
             for (int i = 0; i < count; i++)
@@ -494,7 +478,7 @@ namespace DonGame2D.UI
             }
         }
 
-        private void Update()
+private void Update()
         {
             if (isMatching && DonFusionNetworkManager.Instance != null && DonFusionNetworkManager.Instance.Runner != null)
             {
@@ -514,7 +498,7 @@ namespace DonGame2D.UI
                 {
                     if (count == 0)
                     {
-                        playersCountText.text = "ネットワーク接続中...";
+                        playersCountText.text = isCpuMatch ? "CPUマッチを準備中..." : "ネットワーク接続中...";
                     }
                     else if (isRandomMatch)
                     {
@@ -539,8 +523,6 @@ namespace DonGame2D.UI
 
                             playersCountText.text = $"{playerStr}\n準備ができたら開始してください";
 
-                            // Logic moved to ShowReadyButton to prevent redundant calls and fanning bugs
-                            
                             bool isNetworkReady = fm != null && fm.Object != null && fm.Object.IsValid;
                             int totalForStart = count + friendCpuCount;
                             
@@ -551,7 +533,7 @@ namespace DonGame2D.UI
                             else
                             {
                                 SetHostStartButtonState(false);
-                                playersCountText.text = "ネットワーク初期化中...";
+                                playersCountText.text = isCpuMatch ? "ゲームを初期化中..." : "ネットワーク初期化中...";
                             }
                         }
                         else
@@ -568,7 +550,15 @@ namespace DonGame2D.UI
                     {
                         rect.anchoredPosition = new Vector2(rect.anchoredPosition.x, 500f);
                     }
+                    
+                    // ラウンド設定UIの同期
+                    UpdateRoundSettingUI();
                 }
+            }
+            else
+            {
+                // マッチング終了・キャンセル時も、確実にUIを隠すために呼び出す
+                UpdateRoundSettingUI();
             }
         }
 
@@ -590,7 +580,7 @@ namespace DonGame2D.UI
             if (readyButton != null) { readyButton.gameObject.SetActive(false); readyButton.interactable = false; }
 
             if (DonFusionNetworkManager.Instance != null)
-                await DonFusionNetworkManager.Instance.StartGame(Fusion.GameMode.Shared, null, 4);
+                await DonFusionNetworkManager.Instance.StartGame(Fusion.GameMode.Shared, null, 8);
 
             if (!isMatching) return;
             ShowReadyButton();
@@ -635,7 +625,7 @@ namespace DonGame2D.UI
 
             isMatching = true;
             isRandomMatch = false;
-            friendCpuCount = 0; 
+            friendCpuCount = 0; // フレンドマッチは初期0人
             UpdateCpuCountLabel();
             if (playersCountText != null) playersCountText.text = "ルーム作成中...";
 
@@ -648,7 +638,7 @@ namespace DonGame2D.UI
             if (hostStartButton != null) hostStartButton.gameObject.SetActive(false);
 
             if (DonFusionNetworkManager.Instance != null)
-                await DonFusionNetworkManager.Instance.StartGame(Fusion.GameMode.Shared, generatedRoomId, 4);
+                await DonFusionNetworkManager.Instance.StartGame(Fusion.GameMode.Shared, generatedRoomId, 8);
 
             if (!isMatching) return;
 
@@ -659,6 +649,7 @@ namespace DonGame2D.UI
         {
             isRandomMatch = false; 
             isCpuMatch = true;
+            friendCpuCount = 3; // CPUマッチは初期3人
             HideAllCards();
             if (cpuMatchPanel != null) cpuMatchPanel.SetActive(true);
 
@@ -668,6 +659,9 @@ namespace DonGame2D.UI
             
             selectedTargetPlayers = 0;
             animateCoroutine = StartCoroutine(Co_AnimateCards(cpuSelectionCards));
+            
+            // UI設定（CPUボタンやラウンドボタン）を更新
+            UpdateRoundSettingUI();
         }
 
         private async void OnCpuPlayerCountSelected(int count)
@@ -685,17 +679,39 @@ namespace DonGame2D.UI
 
             if (DonFusionNetworkManager.Instance != null)
             {
-                await DonFusionNetworkManager.Instance.StartGame(Fusion.GameMode.Shared, generatedRoomId, count);
+                // CPUマッチの場合はオフライン（Single）モードを使用する
+                var mode = isCpuMatch ? Fusion.GameMode.Single : Fusion.GameMode.Shared;
+                await DonFusionNetworkManager.Instance.StartGame(mode, generatedRoomId, count);
             }
 
-            if (!isMatching) return;
-
-            ShowReadyButton();
-
-            if (DonGame2D.Logic.DonFusionManager2D.Instance != null)
+            if (isMatching)
             {
-                DonGame2D.Logic.DonFusionManager2D.Instance.ForceStartGameByHost();
+                ShowReadyButton();
+                // マネージャーのインスタンスが有効になるのを待ってから開始命令を送る
+                StartCoroutine(Co_WaitForManagerAndStart());
             }
+        }
+
+        private System.Collections.IEnumerator Co_WaitForManagerAndStart()
+        {
+            float timeout = 5f;
+            float elapsed = 0f;
+            Debug.Log("[TitleUI] Starting Co_WaitForManagerAndStart polling...");
+
+            while (elapsed < timeout)
+            {
+                if (DonGame2D.Logic.DonFusionManager2D.Instance != null && 
+                    DonGame2D.Logic.DonFusionManager2D.Instance.Object != null && 
+                    DonGame2D.Logic.DonFusionManager2D.Instance.Object.IsValid)
+                {
+                    Debug.Log("[TitleUI] DonFusionManager2D found and valid. Triggering ForceStartGameByHost.");
+                    DonGame2D.Logic.DonFusionManager2D.Instance.ForceStartGameByHost(selectedTargetPlayers);
+                    yield break;
+                }
+                elapsed += 0.2f;
+                yield return new WaitForSeconds(0.2f);
+            }
+            Debug.LogError("[TitleUI] Timeout waiting for DonFusionManager2D instance!");
         }
 
         private void OnCpuBackClicked()
@@ -754,7 +770,7 @@ namespace DonGame2D.UI
 
             if (DonFusionNetworkManager.Instance != null)
             {
-                bool success = await DonFusionNetworkManager.Instance.StartGame(Fusion.GameMode.Shared, inputId, 4, isHost: false);
+                bool success = await DonFusionNetworkManager.Instance.StartGame(Fusion.GameMode.Shared, inputId, 8, isHost: false);
                 
                 if (!success)
                 {
@@ -790,7 +806,7 @@ namespace DonGame2D.UI
             ShowMainButtons();
         }
 
-        private void OnBackClicked()
+private void OnBackClicked()
         {
             Debug.Log($"[Stack] OnBackClicked triggered. Current stack count: {selectedStack.Count}");
             if (selectedStack.Count > 0)
@@ -818,9 +834,9 @@ namespace DonGame2D.UI
             Debug.Log($"[Stack] Remaining stack count: {selectedStack.Count}");
 
             // Now decide which menu to show based on what's left in the stack
-            if (selectedStack.Count == 0 || !isMatching)
+            if (selectedStack.Count == 0)
             {
-                Debug.Log("[Stack] No cards left or matching cancelled. Returning to Main Menu.");
+                Debug.Log("[Stack] No cards left. Returning to Main Menu.");
                 CancelMatchmaking(true);
             }
             else
@@ -859,43 +875,59 @@ namespace DonGame2D.UI
 
         private void CancelMatchmaking(bool showMainMenu = true)
         {
-            if (!isMatching && !isReady) 
+            Debug.Log("CancelMatchmaking: Resetting UI stack and returning to main menu.");
+
+            // 1. 全てのカードをスタックから解放して戻す (メインメニューに戻る時だけ全リセット)
+            if (showMainMenu)
             {
-                if (showMainMenu) ShowMainButtons();
-                return;
+                foreach (var card in selectedStack)
+                {
+                    if (card != null)
+                    {
+                        card.ResetCardState();
+                        card.FlyBack();
+                    }
+                }
+                selectedStack.Clear();
+            }
+            else
+            {
+                // 一つ前の階層に戻るだけなら、スタックには残したまま手札だけ掃除する
+                // (OnBackClicked で Pop 済みのカード以外は HideAllCards で場に残される)
             }
 
-            Debug.Log("マッチングをキャンセルしました。");
+            // 2. マッチング・readyStateのリセット
             isMatching = false;
             isReady = false;
+            isRandomMatch = false;
+            hostCardsShown = false;
+
+            // 3. 実行中のUI演出を全て停止
+            StopAllCoroutines();
+            animateCoroutine = null;
+
+            // 4. 全てのカードを非表示 (showMainMenu なら force=true でスタックも消す)
+            HideAllCards(showMainMenu);
             
+            // selectedStack.Clear() を showMainMenu の場合のみにしたため、
+            // ここで改めて stack 以外を確実に掃除する
+
+            // 5. 個別のUIパネルを非表示
+            if (hostPanel != null) hostPanel.SetActive(false);
+            if (guestPanel != null) guestPanel.SetActive(false);
+            if (cpuMatchPanel != null) cpuMatchPanel.SetActive(false);
+            if (friendMatchPanel != null) friendMatchPanel.SetActive(showMainMenu); 
+            if (roundSettingPanel != null) roundSettingPanel.SetActive(false); // 確実に消す
+
+            // 6. 各種ボタン・テキストの状態リセット
             if (playersCountText != null) playersCountText.text = "";
             if (readyButton != null)
             {
                 readyButton.gameObject.SetActive(false);
-                readyButton.GetComponentInChildren<Text>().text = "READY";
+                var t = readyButton.GetComponentInChildren<Text>();
+                if (t != null) t.text = "READY";
             }
-            if (hostStartButton != null)
-            {
-                hostStartButton.gameObject.SetActive(false);
-            }
-            
-            hostCardsShown = false;
-            
-            // Sub-panels reset but don't automatically show Main Menu unless requested
-            if (hostPanel != null) hostPanel.SetActive(false);
-            if (guestPanel != null) guestPanel.SetActive(false);
-            if (cpuMatchPanel != null) cpuMatchPanel.SetActive(false);
-            
-            // Hide guest and random specific cards
-            if (guestSelectionCards != null) foreach (var c in guestSelectionCards) if (c != null) c.gameObject.SetActive(false);
-            if (randomSelectionCards != null) foreach (var c in randomSelectionCards) if (c != null) c.gameObject.SetActive(false);
-
-            // HideAllCards is safe here but we don't call ShowMainButtons yet
-            HideAllCards();
-
-            if (showMainMenu) ShowMainButtons();
-
+            if (hostStartButton != null) hostStartButton.gameObject.SetActive(false);
             if (hostButton != null) hostButton.interactable = true;
             if (guestButton != null) guestButton.interactable = true;
 
@@ -910,7 +942,7 @@ namespace DonGame2D.UI
                 if (textCmp != null) textCmp.text = "コピー";
             }
 
-            // 1. Reset networked state FIRST, while the runner is still active
+            // 7. ネットワーク接続の切断
             if (DonFusionNetworkManager.Instance != null && 
                 DonFusionNetworkManager.Instance.Runner != null && 
                 DonFusionNetworkManager.Instance.Runner.IsRunning)
@@ -920,11 +952,17 @@ namespace DonGame2D.UI
                 {
                     fm.SetPlayerReady(false);
                 }
+                DonFusionNetworkManager.Instance.ShutdownNetRunner();
+            }
 
-                // 2. Perform Shutdown AFTER resetting any state
-                DonFusionNetworkManager.Instance.Runner.Shutdown(destroyGameObject: false);
+            // 8. メインメニューのメインボタンを再表示
+            if (showMainMenu)
+            {
+                ShowMainButtons();
             }
         }
+
+
 
         private void ShowReadyButton()
         {
@@ -951,7 +989,7 @@ namespace DonGame2D.UI
                             img.color = Color.white;
                         }
                         // 選択のコールバックを設定
-                        readySelectionCard.isInteractable = (DonFusionNetworkManager.Instance?.Runner?.ActivePlayers.Count() >= 3);
+                        readySelectionCard.isInteractable = (DonFusionNetworkManager.Instance?.Runner?.ActivePlayers.Count() >= 2);
                         readySelectionCard.OnCardDropped = null;
                         readySelectionCard.OnCardDropped += (card) => OnReadyClicked();
 
@@ -1011,7 +1049,7 @@ namespace DonGame2D.UI
 
                 if (isRandomMatch)
                 {
-                    playersCountText.text = $"他のプレイヤーを待っています...\n現在 {count} 人 (3人以上で開始可能)";
+                    playersCountText.text = $"他のプレイヤーを待っています...\n現在 {count} 人 (2人以上で開始可能)";
                 }
                 else
                 {
@@ -1035,14 +1073,26 @@ namespace DonGame2D.UI
 
         private void OnHostStartClicked()
         {
-            if (!isMatching) return;
+            if (!isMatching && !isCpuMatch) return;
 
             int currentRealPlayers = DonFusionNetworkManager.Instance?.Runner?.ActivePlayers.Count() ?? 1;
+            
+            // CPUマッチかつマッチング開始前（一人用設定画面）の場合
+            if (isCpuMatch && !isMatching)
+            {
+                // 自分(1人) + 設定されたCPU数
+                int totalTarget = 1 + friendCpuCount;
+                if (totalTarget < 2) totalTarget = 2; // 最低2人(自分+CPU1)
+                
+                // CPUマッチ開始
+                OnCpuPlayerCountSelected(totalTarget);
+                return;
+            }
+
+            // フレンドマッチ（ホスト）の場合
             int totalForStart = currentRealPlayers + friendCpuCount;
             
-            bool isCpuMatch = selectedTargetPlayers > 0 && !isRandomMatch && friendCpuCount == 0;
-            
-            if (!isCpuMatch && totalForStart < 3)
+            if (totalForStart < 2)
             {
                 Debug.LogWarning($"[TitleUI] 人数不足: {totalForStart}人");
                 return;
@@ -1057,8 +1107,7 @@ namespace DonGame2D.UI
             var fm = DonGame2D.Logic.DonFusionManager2D.Instance;
             if (fm != null && fm.Object != null && fm.Object.IsValid)
             {
-                int finalTarget = isCpuMatch ? selectedTargetPlayers : totalForStart;
-                fm.RPC_FriendMatchForceStart(finalTarget);
+                fm.RPC_FriendMatchForceStart(totalForStart, pendingMaxRounds);
             }
             else
             {
@@ -1099,10 +1148,10 @@ namespace DonGame2D.UI
             if (runner != null)
             {
                 int playerCount = runner.ActivePlayers.Count();
-                if (playerCount < 3)
+                if (playerCount < 2)
                 {
-                    Debug.Log($"[TitleUI] Cannot ready: count {playerCount} < 3");
-                    // 3人未満の場合は元の位置に戻す
+                    Debug.Log($"[TitleUI] Cannot ready: count {playerCount} < 2");
+                    // 2人未満の場合は元の位置に戻す
                     if (readySelectionCard != null) readySelectionCard.FlyBack(false);
                     return;
                 }
@@ -1180,9 +1229,14 @@ namespace DonGame2D.UI
 
         private void OnCpuAddClicked()
         {
-            if (DonFusionNetworkManager.Instance?.Runner == null) return;
-            int realPlayers = DonFusionNetworkManager.Instance.Runner.ActivePlayers.Count();
-            int maxCpu = Mathf.Max(0, 4 - realPlayers); 
+            int realPlayers = (DonFusionNetworkManager.Instance?.Runner != null) ? DonFusionNetworkManager.Instance.Runner.ActivePlayers.Count() : 1;
+            int maxCpu;
+            if (isCpuMatch) {
+                maxCpu = 7; // CPUマッチ：最大7 (自分+7=8)
+            } else {
+                maxCpu = Mathf.Max(0, 8 - realPlayers); // フレンドマッチ：最大 8 - リアル人数
+            }
+            
             if (friendCpuCount < maxCpu)
             {
                 friendCpuCount++;
@@ -1192,7 +1246,8 @@ namespace DonGame2D.UI
 
         private void OnCpuRemoveClicked()
         {
-            if (friendCpuCount > 0)
+            int minCpu = isCpuMatch ? 1 : 0; // CPUマッチは最小1、フレンドは0
+            if (friendCpuCount > minCpu)
             {
                 friendCpuCount--;
                 UpdateCpuCountLabel();
@@ -1203,18 +1258,22 @@ namespace DonGame2D.UI
         {
             if (cpuCountLabel != null)
             {
-                if (friendCpuCount == 0)
-                    cpuCountLabel.text = "CPU: なし";
-                else
-                    cpuCountLabel.text = $"CPU: +{friendCpuCount}";
+                cpuCountLabel.text = friendCpuCount.ToString();
             }
-            if (DonFusionNetworkManager.Instance?.Runner != null)
-            {
-                int realPlayers = DonFusionNetworkManager.Instance.Runner.ActivePlayers.Count();
-                int maxCpu = Mathf.Max(0, 4 - realPlayers);
-                if (cpuAddButton != null) cpuAddButton.interactable = (friendCpuCount < maxCpu);
-                if (cpuRemoveButton != null) cpuRemoveButton.interactable = (friendCpuCount > 0);
+
+            int realPlayers = (DonFusionNetworkManager.Instance?.Runner != null) ? DonFusionNetworkManager.Instance.Runner.ActivePlayers.Count() : 1;
+            int maxCpu;
+            int minCpu;
+            if (isCpuMatch) {
+                maxCpu = 7;
+                minCpu = 1;
+            } else {
+                maxCpu = Mathf.Max(0, 8 - realPlayers);
+                minCpu = 0;
             }
+
+            if (cpuAddButton != null) cpuAddButton.interactable = (friendCpuCount < maxCpu);
+            if (cpuRemoveButton != null) cpuRemoveButton.interactable = (friendCpuCount > minCpu);
         }
 
         private string GenerateRoomId()
@@ -1248,6 +1307,159 @@ namespace DonGame2D.UI
                     Debug.Log($"[TitleUI] Disabled legacy button: {name}");
                 }
             }
+        }
+
+        private void OnRoundPlusClicked()
+        {
+            if (!isMatching)
+            {
+                if (pendingMaxRounds < 99) pendingMaxRounds++;
+                UpdateRoundSettingUI();
+                return;
+            }
+            var fm = DonGame2D.Logic.DonFusionManager2D.Instance;
+            if (fm == null || fm.Runner == null || !fm.Runner.IsSharedModeMasterClient) return;
+            fm.RPC_UpdateRoundSettings(fm.MaxRounds + 1);
+        }
+
+        private void OnRoundMinusClicked()
+        {
+            if (!isMatching)
+            {
+                if (pendingMaxRounds > 1) pendingMaxRounds--;
+                UpdateRoundSettingUI();
+                return;
+            }
+            var fm = DonGame2D.Logic.DonFusionManager2D.Instance;
+            if (fm == null || fm.Runner == null || !fm.Runner.IsSharedModeMasterClient) return;
+            if (fm.MaxRounds > 1) fm.RPC_UpdateRoundSettings(fm.MaxRounds - 1);
+        }
+
+
+
+        private void UpdateRoundSettingUI()
+        {
+            var fm = DonGame2D.Logic.DonFusionManager2D.Instance;
+            
+            // 表示判定の修正: マッチング中(フレンドマッチ/CPU戦) または CPUマッチ設定画面
+            bool isFriendMatchLobby = isMatching && !isRandomMatch;
+            bool isCpuSelection = isCpuMatch && !isMatching;
+
+            if (!isFriendMatchLobby && !isCpuSelection && !(isMatching && isCpuMatch))
+            {
+                if (roundSettingPanel != null && roundSettingPanel.activeSelf) roundSettingPanel.SetActive(false);
+                return;
+            }
+
+            // 自動取得再試行
+            if (roundSettingPanel == null) TryFindRoundSettingUI();
+            if (roundSettingPanel == null) return;
+
+            // ネットワーク接続前またはホストである場合に操作可能とする
+            bool isHostLocal = true;
+            if (fm != null && fm.Runner != null && fm.Object != null && fm.Object.IsValid)
+            {
+                isHostLocal = fm.Runner.IsServer || fm.Runner.IsSharedModeMasterClient;
+            }
+            
+            // 表示切替
+            roundSettingPanel.SetActive(isHostLocal);
+            
+            if (roundSettingPanel == null || !roundSettingPanel.activeSelf) return;
+
+            // グループの表示制御
+            var cpuGroup = roundSettingPanel.transform.Find("CpuGroup");
+            if (cpuGroup != null) cpuGroup.gameObject.SetActive(isFriendMatchLobby || isCpuSelection);
+
+            UpdateCpuCountLabel();
+
+            int currentMaxRounds = (isMatching && fm != null && fm.Object != null && fm.Object.IsValid) ? fm.MaxRounds : pendingMaxRounds;
+
+            if (roundPlusButton != null) roundPlusButton.interactable = true;
+            if (roundMinusButton != null) roundMinusButton.interactable = currentMaxRounds > 1;
+
+            if (roundCountText != null)
+            {
+                roundCountText.text = currentMaxRounds.ToString();
+                roundCountText.color = Color.white;
+            }
+        }
+
+        private void TryFindRoundSettingUI()
+        {
+            if (roundSettingPanel == null)
+            {
+                var canvas = (titleCanvasObj != null) ? titleCanvasObj.transform : this.transform;
+                var allRects = canvas.GetComponentsInChildren<RectTransform>(true);
+                foreach (var r in allRects)
+                {
+                    if (r.name == "RoundSettingPanel")
+                    {
+                        roundSettingPanel = r.gameObject;
+                        break;
+                    }
+                }
+            }
+
+            if (roundSettingPanel != null)
+            {
+                var rGroup = roundSettingPanel.transform.Find("RoundGroup");
+                var cGroup = roundSettingPanel.transform.Find("CpuGroup");
+
+                if (rGroup != null)
+                {
+                    // RoundGroup -> RoundLabelContainer の中にあるため
+                    var container = rGroup.Find("RoundLabelContainer");
+                    if (container != null)
+                    {
+                        roundCountText = container.Find("RoundCountLabel")?.GetComponent<Text>();
+                        roundPlusButton = container.Find("PlusButton")?.GetComponent<Button>();
+                        roundMinusButton = container.Find("MinusButton")?.GetComponent<Button>();
+                    }
+                }
+
+                if (cGroup != null)
+                {
+                    // CpuGroup直下にあるため
+                    cpuCountLabel = cGroup.Find("CpuCountLabel")?.GetComponent<Text>();
+                    cpuAddButton = cGroup.Find("CpuAddButton")?.GetComponent<Button>();
+                    cpuRemoveButton = cGroup.Find("CpuRemoveButton")?.GetComponent<Button>();
+                }
+                
+                SetupRoundButtonListeners();
+
+                if (cpuAddButton != null)
+                {
+                    cpuAddButton.onClick.RemoveAllListeners();
+                    cpuAddButton.onClick.AddListener(OnCpuAddClicked);
+                }
+                if (cpuRemoveButton != null)
+                {
+                    cpuRemoveButton.onClick.RemoveAllListeners();
+                    cpuRemoveButton.onClick.AddListener(OnCpuRemoveClicked);
+                }
+            }
+        }
+
+        private void SetupRoundButtonListeners()
+        {
+            if (roundPlusButton != null)
+            {
+                roundPlusButton.onClick.RemoveAllListeners();
+                var lp = roundPlusButton.gameObject.GetComponent<LongPressButton>() ?? roundPlusButton.gameObject.AddComponent<LongPressButton>();
+                lp.onLongPress.RemoveAllListeners();
+                lp.onLongPress.AddListener(() => OnRoundPlusClicked());
+                roundPlusButton.onClick.AddListener(() => OnRoundPlusClicked());
+            }
+            if (roundMinusButton != null)
+            {
+                roundMinusButton.onClick.RemoveAllListeners();
+                var lp = roundMinusButton.gameObject.GetComponent<LongPressButton>() ?? roundMinusButton.gameObject.AddComponent<LongPressButton>();
+                lp.onLongPress.RemoveAllListeners();
+                lp.onLongPress.AddListener(() => OnRoundMinusClicked());
+                roundMinusButton.onClick.AddListener(() => OnRoundMinusClicked());
+            }
+
         }
     }
 }

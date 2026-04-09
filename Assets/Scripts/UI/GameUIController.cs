@@ -1,3 +1,4 @@
+using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.UI;
@@ -60,6 +61,8 @@ namespace DonGame2D.UI
         public Transform opponentInfoContainer;
         public GameObject opponentInfoPrefab;
         public Dictionary<int, OpponentUIInfo> opponentUIs = new Dictionary<int, OpponentUIInfo>();
+        
+        private Text _drawPenaltyIndicator; // 2ドロー累積表示用テキスト
 
         [Header("Final Result")]
         public GameObject finalResultPanel;
@@ -82,12 +85,18 @@ namespace DonGame2D.UI
         private bool hasSubscribedToFusion = false;
         private bool isDonButtonSetup = false; // Donボタンの初期化完了フラグ
         
-        private bool isDealingAnimationRunning = false; // 配布アニメーション中フラグ
+        private bool isDealingAnimationRunning = false; // [FIX] 操作ロック用（配布・ドロー共通）
+        private bool isInitialDealingAnimation = false; // [NEW] ラウンド開始時の0→5枚配布中フラグ
+        private Dictionary<int, int> _dealingHandCounts = new Dictionary<int, int>(); // [NEW] 手札配付用のアニメーション枚数保持
+        private Dictionary<int, int> _displayedCredits = new Dictionary<int, int>();
+        private bool _isCreditInitialized = false;
         private Queue<CardInfo> pendingDrawAnimations = new Queue<CardInfo>(); // アニメーション待ちキュー
         private int inFlightAnimationCount = 0; // Dequeue済みでアニメーション中のカード枚数
         private List<CardUI> animatingDrawCards = new List<CardUI>(); // 進行中のドロー演出用カード
+        private bool _isExpectingInitialDeal = false; // 初期配布を待機しているかどうかのローカルフラグ
+        private bool _hasInitialDealCompleted = false; // [NEW] 手札の初期配布アニメーションが完了したかどうかの論理ロック
 
-        public bool IsInteractionBlocked => isDealingAnimationRunning || IsScatterAnimationRunning || (scoreAnimationController != null && scoreAnimationController.IsAnimating);
+        public bool IsInteractionBlocked => isDealingAnimationRunning || IsScatterAnimationRunning || (scoreAnimationController != null && scoreAnimationController.IsAnimating) || (DonFusionManager2D.Instance != null && DonFusionManager2D.Instance.DrawAnimationTimer.IsRunning);
 
         private void Awake()
         {
@@ -322,6 +331,102 @@ namespace DonGame2D.UI
             var fm = DonFusionManager2D.Instance;
             if (fm == null) return;
 
+            // [FIX] 状態更新に必要な変数を定義
+            int localActorId = GetLocalActorId();
+            bool isMyTurn = (fm.Runner != null && fm.CurrentTurnPlayerActorId == localActorId);
+            bool isAnimating = (scoreAnimationController != null && scoreAnimationController.IsAnimating);
+
+            // [FIX] 初回カード（8）のための親判定: 配布中はターンが -1 なので、誰が親になるかを推定する
+            int startingPlayerActorId = (fm.WinnerActorId > 0) ? fm.WinnerActorId : (fm.Actors.Length > 0 ? fm.Actors.Get(0).ActorId : -1);
+            bool isMyStartingTurn = (fm.CurrentTurnPlayerActorId == -1 && fm.IsInitialDeal && startingPlayerActorId == localActorId);
+            bool isAmIPickingSuit = isMyTurn || isMyStartingTurn;
+
+            // [FIX] 配布アニメーション中でも相手のUI（目的地）や捨て札の状態（8のマーク変更）は更新する必要があるため、早期リターンの前に呼び出す
+            UpdateOpponentsUI();
+            UpdateStatusText();
+            UpdateRoundDisplay();
+            UpdateFusionDiscardPileUI(); // [CRITICAL] 常に監視が必要
+
+            // [NEW] ラウンド終了時（演出フェーズ）にロックを事前にかけておく
+            if (fm.IsRoundOver && _hasInitialDealCompleted)
+            {
+                _hasInitialDealCompleted = false;
+                _isExpectingInitialDeal = true;
+            }
+
+            // [FIX] 実際に捨て札が見える様になってから効果UIを表示するため、コンテナ内のカード存在をチェックする
+            bool isDiscardVisible = false;
+            if (discardPileContainer != null) {
+                foreach (Transform child in discardPileContainer) {
+                    if (child.GetComponent<CardUI>() != null) { isDiscardVisible = true; break; }
+                }
+            }
+
+            // --- 2ドロー累積表示 (+X) の動的生成と更新 ---
+            // [FIX] 配布アニメーション中も +2 などの表示が必要なため、ここに移動。ただしカードが見えるまでは待つ。
+            if (_drawPenaltyIndicator == null && discardPileContainer != null) {
+                var obj = new GameObject("DrawPenaltyIndicator", typeof(RectTransform), typeof(Text), typeof(Shadow));
+                obj.transform.SetParent(discardPileContainer, false);
+                _drawPenaltyIndicator = obj.GetComponent<Text>();
+                try {
+                    _drawPenaltyIndicator.font = mainFontBold != null ? mainFontBold : (mainFontRegular != null ? mainFontRegular : Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf"));
+                } catch {
+                    Debug.LogWarning("[GameUIController] Failed to load builtin font 'LegacyRuntime.ttf'.");
+                }
+                _drawPenaltyIndicator.fontSize = 60;
+                _drawPenaltyIndicator.color = Color.white;
+                _drawPenaltyIndicator.alignment = TextAnchor.MiddleCenter;
+                var rt = obj.GetComponent<RectTransform>();
+                rt.anchoredPosition = new Vector2(0, 150);
+                rt.sizeDelta = new Vector2(200, 100);
+                rt.localScale = Vector3.one;
+                var shadow = obj.GetComponent<Shadow>();
+                shadow.effectColor = new Color(0, 0, 0, 0.5f);
+                shadow.effectDistance = new Vector2(2, -2);
+            }
+            if (_drawPenaltyIndicator != null) {
+                if (fm.DrawPenaltyCount > 0 && isDiscardVisible) {
+                    _drawPenaltyIndicator.text = "+" + fm.DrawPenaltyCount;
+                    _drawPenaltyIndicator.gameObject.SetActive(true);
+                    _drawPenaltyIndicator.transform.SetAsLastSibling();
+                    var rt = _drawPenaltyIndicator.rectTransform;
+                    rt.anchoredPosition = new Vector2(0, 150);
+                    rt.localScale = Vector3.one;
+                } else {
+                    _drawPenaltyIndicator.gameObject.SetActive(false);
+                }
+            }
+
+            // --- スート選択UIの表示トリガー ---
+            // [FIX] 配布アニメーション中も「8」がめくれたら即座に選択できるように、ここに移動。ただしカードが見えるまでは待つ。
+            if (fm.IsWaitingForSuitSelection && isAmIPickingSuit && isDiscardVisible)
+            {
+                if (suitSelectionPanel != null && !suitSelectionPanel.activeSelf)
+                {
+                    ShowSuitSelectionUI();
+                }
+            }
+            else if (suitSelectionPanel != null && suitSelectionPanel.activeSelf)
+            {
+                suitSelectionPanel.SetActive(false);
+            }
+            
+            if (isInitialDealingAnimation)
+            {
+                // [FIX] ラウンド開始時の「5枚配布中」のみメインのステータス表示を「Dealing...」で上書きし、ボタンを非表示にする
+                statusText.text = "Dealing cards...";
+                statusText.color = Color.white;
+                // [FIX] 手札を配っている間は Don ボタンも非表示にする
+                if (donButton != null) donButton.gameObject.SetActive(false);
+                if (discardDonButton != null) discardDonButton.gameObject.SetActive(false);
+                return;
+            }
+            
+            // ドロー中などの一般的なアニメーション中（isDealingAnimationRunning=true）でも、
+            // ステータス表示やボタン制御は通常のフロー（UpdateStatusText, UpdateRoundDisplay）に任せる。
+            // 操作自体は drawButton.interactable 等で別途抑制されるため安全です。
+
+            // [FIX] 欠落していた Don ボタンの初期化リスナー設定を復元
             if (!isDonButtonSetup)
             {
                 if (discardDonButton == null)
@@ -336,8 +441,8 @@ namespace DonGame2D.UI
                     {
                         if (useFusion && DonFusionManager2D.Instance != null && DonFusionManager2D.Instance.Object != null)
                         {
-                            int localId = GetLocalActorId();
-                            if (DonFusionManager2D.Instance.IsWaitingForDonGaeshi && DonFusionManager2D.Instance.DonTargetActorId == localId)
+                            int lId = GetLocalActorId();
+                            if (DonFusionManager2D.Instance.IsWaitingForDonGaeshi && DonFusionManager2D.Instance.DonTargetActorId == lId)
                             {
                                 DonFusionManager2D.Instance.RPC_DeclareDonGaeshi(DonFusionManager2D.Instance.Runner.LocalPlayer);
                             }
@@ -353,55 +458,18 @@ namespace DonGame2D.UI
                 }
             }
 
-            int localActorId = GetLocalActorId();
-            bool isMyTurn = (fm.Runner != null && fm.CurrentTurnPlayerActorId == localActorId);
+            // InitializeDisplayedCredits と penaltyText の更新は UpdateRoundDisplay に集約済み
 
-            if (notificationTimer > 0)
-            {
-                statusText.text = temporaryNotification;
-                statusText.color = Color.yellow;
-                notificationTimer -= Time.deltaTime;
-            }
-            else
-            {
-                statusText.color = Color.white;
-                if (!fm.IsRoundOver)
-                {
-                    if (isMyTurn) statusText.text = "Your Turn";
-                    else
-                    {
-                        var current = fm.GetActor(fm.CurrentTurnPlayerActorId);
-                        string actorName = current.IsActive ? (current.IsCPU ? "CPU " : "Player ") + current.ActorId : "Opponent";
-                        statusText.text = $"{actorName}'s Turn";
-                    }
-                }
-            }
+            // roundText.text の更新は UpdateRoundDisplay に集約済み
 
-            int myCredits = fm.PlayerCredits.ContainsKey(localActorId) ? fm.PlayerCredits[localActorId] : 0;
-            penaltyText.text = $"RD {fm.CurrentRound}/5";
-            if (fm.DrawPenaltyCount > 0) penaltyText.text += $" | Penalty: +{fm.DrawPenaltyCount}";
-            
-            if (creditText != null) {
-                creditText.text = myCredits.ToString();
-            }
-            if (creditCardObject != null && !creditCardObject.activeSelf) {
-                creditCardObject.SetActive(true);
-            }
-            
-            if (roundText != null) {
-                if (roundText.transform.parent != null && !roundText.transform.parent.gameObject.activeSelf) {
-                    roundText.transform.parent.gameObject.SetActive(true);
-                }
-                roundText.text = $"{fm.CurrentRound}/5";
-            }
-
-            drawButton.interactable = isMyTurn && !fm.IsRoundOver && !IsInteractionBlocked;
+            drawButton.interactable = isMyTurn && !fm.IsRoundOver && !IsInteractionBlocked && !fm.IsInitialDeal && !fm.IsDrawing;
 
             Button targetDonButton = discardDonButton;
             if (targetDonButton != null)
             {
                 bool canDon = false;
                 int myTotal = 0;
+                int currentTopCardRank = 0;
                 if (!fm.IsRoundOver)
                 {
                     bool isDonAllowedRound = true;
@@ -417,14 +485,14 @@ namespace DonGame2D.UI
                         foreach (var c in fm.myLocalHand) myTotal += c.Rank;
 
                         // UIアニメーションの遅延に影響されないよう、NetworkArrayの最新の捨て札を直接参照
-                        int currentTopCardRank = 0;
                         if (fm.DiscardCount > 0) {
                             currentTopCardRank = fm.DiscardPile.Get(fm.DiscardCount - 1).Rank;
                         }
 
                         // 捨て札と手札合計が一致した場合のみ Don 可能 (Match Don)
+                        // [FIX] 誰かがカードをプレイした直後であること（初期カードは不可）
                         bool canMatchDon = false;
-                        if (currentTopCardRank > 0)
+                        if (currentTopCardRank > 0 && fm.LastPlayedPlayerActorId != -1)
                         {
                             canMatchDon = (myTotal == currentTopCardRank && myTotal <= 13);
                         }
@@ -435,11 +503,14 @@ namespace DonGame2D.UI
                             if (currentTopCardRank > 0)
                             {
                                 if (fm.DonTargetActorId == localActorId && myTotal == currentTopCardRank) canDon = true;
+                                // ターゲット以外の場合でも、通常ドン（マルチ対応）ができるなら押せるようにする
+                                else if (canMatchDon && fm.LastPlayedPlayerActorId != localActorId) canDon = true;
                             }
                         }
                         else
                         {
-                            if (canMatchDon) canDon = true;
+                            // Match Don: 合計値が一致し、かつ最後に出したのが自分以外の場合のみ
+                            if (canMatchDon && fm.LastPlayedPlayerActorId != localActorId) canDon = true;
                         }
                     }
                 }
@@ -481,36 +552,46 @@ namespace DonGame2D.UI
                 // --- 修正：シンプルなロジックに戻し、デバッグログを追加 ---
                 bool serverCanDon = fm.IsDonWindowOpen || fm.IsWaitingForDonGaeshi;
                 if (serverCanDon && !canDon) {
-                    Debug.Log($"[DonDebug] LocalTotal={myTotal}, TargetRank={lastTopCardRank}, IsOver={fm.IsRoundOver}, Discard={fm.DiscardCount}, IsOpen={fm.IsDonWindowOpen}, IsGaeshi={fm.IsWaitingForDonGaeshi}");
+                    // [DonDebug] サーバーはDon可能期間だと言っているが、クライアント側で条件（合計値の一致など）を満たしていない場合
+                    Debug.Log($"[DonDebug] LocalTotal={myTotal}, TargetRank={currentTopCardRank}, IsOver={fm.IsRoundOver}, Discard={fm.DiscardCount}, IsOpen={fm.IsDonWindowOpen}, IsGaeshi={fm.IsWaitingForDonGaeshi}");
+                }
+                else if (serverCanDon && canDon && !targetDonButton.gameObject.activeSelf) {
+                    // [DonDebug] 条件は満たしているが、まだボタンが表示されていない（最初のフレームなど）
+                    Debug.Log($"[DonDebug] Showing DON Button! Total={myTotal}, Rank={currentTopCardRank}");
                 }
 
                 // 基本的にサーバーの窓口が開いているなら表示するが、自分が最後に出したカードにはドンできない（ドン返し以外）
                 bool finalCanShow = canDon;
+                int myIdx = fm.GetActorIndex(localActorId);
+                if (myIdx != -1 && fm.IsDonRestricted[myIdx]) finalCanShow = false;
                 if (fm.IsRoundOver) finalCanShow = false;
 
                 targetDonButton.gameObject.SetActive(finalCanShow);
-                // 他プレイヤーのDon演出中（IsScatterAnimationRunning）でも、自身がDon可能ならボタンを有効にする
-                bool blockForDon = isDealingAnimationRunning || (scoreAnimationController != null && scoreAnimationController.IsAnimating);
+                // 他プレイヤーのDon演出中でも、自身がDon可能ならボタンを有効にする（アニメーションによるインタラクトブロックを解除）
+                bool blockForDon = isDealingAnimationRunning;
                 targetDonButton.interactable = canDon && !blockForDon;
             }
 
-            UpdateFusionDiscardPileUI();
+            // UpdateFusionDiscardPileUI(); // ここから削除
 
             if (fm.IsRoundOver)
             {
-                // 最終リザルト表示中は通常のパネルを表示しない
-                if (finalResultPanel == null || !finalResultPanel.activeSelf)
+                // 最終リザルト表示中、または演出中は通常のパネルを表示しない
+                // ※isAnimating はメソッド冒頭で定義済み
+                if (!isAnimating && (finalResultPanel == null || !finalResultPanel.activeSelf))
                 {
                     if (resultPanel != null) {
-                        resultPanel.SetActive(true);
-                        resultPanel.transform.SetAsLastSibling(); // 最前面に持ってくる
+                        if (!resultPanel.activeSelf) {
+                            resultPanel.SetActive(true);
+                            resultPanel.transform.SetAsLastSibling(); // 最前面に持ってくる
+                        }
                     }
                     string winnerName = (fm.WinnerActorId != -1) ? $"Player {fm.WinnerActorId}" : "Someone";
                     resultText.text = $"{winnerName} Wins!";
                 }
                 else
                 {
-                    if (resultPanel != null) resultPanel.SetActive(false);
+                    if (resultPanel != null && resultPanel.activeSelf) resultPanel.SetActive(false);
                 }
             }
             else
@@ -522,11 +603,93 @@ namespace DonGame2D.UI
                         Destroy(child.gameObject);
                 }
             }
-            UpdateOpponentsUI();
         }
 
+        private void UpdateStatusText()
+        {
+            var fm = DonFusionManager2D.Instance;
+            if (fm == null || statusText == null) return;
 
-        private void UpdateOpponentsUI()
+            int localActorId = GetLocalActorId();
+            bool isMyTurn = (fm.Runner != null && fm.CurrentTurnPlayerActorId == localActorId);
+
+            if (notificationTimer > 0)
+            {
+                statusText.text = temporaryNotification;
+                statusText.color = Color.yellow;
+                notificationTimer -= Time.deltaTime;
+            }
+            else
+            {
+                statusText.color = Color.white;
+                if (!fm.IsRoundOver)
+                {
+                    if (isMyTurn) statusText.text = "Your Turn";
+                    else
+                    {
+                        var current = fm.GetActor(fm.CurrentTurnPlayerActorId);
+                        string actorName = current.IsActive ? (current.IsCPU ? "CPU " : "Player ") + current.ActorId : "Opponent";
+                        statusText.text = $"{actorName}'s Turn";
+                    }
+                }
+            }
+        }
+
+        private void UpdateRoundDisplay()
+        {
+            var fm = DonFusionManager2D.Instance;
+            if (fm == null) return;
+
+            int localActorId = GetLocalActorId();
+
+            // クレジット表示の初期化（初回のみ）
+            if (!_isCreditInitialized && fm.PlayerCredits.Count > 0)
+            {
+                InitializeDisplayedCredits();
+                _isCreditInitialized = true;
+            }
+
+            // 演出中でない場合は、実データと表示バッファを同期させる
+            bool isAnimating = (scoreAnimationController != null && scoreAnimationController.IsAnimating);
+            bool isRoundOver = fm.IsRoundOver;
+            
+            if (!isAnimating && !isRoundOver)
+            {
+                foreach (var kvp in fm.PlayerCredits)
+                {
+                    _displayedCredits[kvp.Key] = kvp.Value;
+                }
+            }
+
+            int myCredits = _displayedCredits.ContainsKey(localActorId) ? _displayedCredits[localActorId] : 0;
+            string maxRoundStr = fm.MaxRounds.ToString();
+
+            if (penaltyText != null)
+            {
+                penaltyText.text = $"RD {fm.CurrentRound}/{maxRoundStr}";
+                if (fm.DrawPenaltyCount > 0) penaltyText.text += $" | Penalty: +{fm.DrawPenaltyCount}";
+            }
+
+            if (creditText != null)
+            {
+                creditText.text = myCredits.ToString();
+            }
+            if (creditCardObject != null && !creditCardObject.activeSelf)
+            {
+                creditCardObject.SetActive(true);
+            }
+            
+            if (roundText != null)
+            {
+                if (roundText.transform.parent != null && !roundText.transform.parent.gameObject.activeSelf)
+                {
+                    roundText.transform.parent.gameObject.SetActive(true);
+                }
+                roundText.text = $"{fm.CurrentRound}/{maxRoundStr}";
+            }
+        }
+
+        public void UpdateOpponentsUI()
         {
             var fm = DonFusionManager2D.Instance;
             if (fm == null || opponentInfoContainer == null || opponentInfoPrefab == null) return;
@@ -535,7 +698,7 @@ namespace DonGame2D.UI
             if (scoreAnimationController != null && scoreAnimationController.IsAnimating) return;
 
             int localActorId = -1;
-            for (int i = 0; i < 4; i++)
+            for (int i = 0; i < fm.Actors.Length; i++)
             {
                 var ac = fm.Actors.Get(i);
                 if (ac.IsActive && !ac.IsCPU && ac.PlayerRef == fm.Runner.LocalPlayer)
@@ -548,7 +711,7 @@ namespace DonGame2D.UI
             if (localActorId == -1) return;
 
             var activeActors = new List<ActorInfo>();
-            for (int i = 0; i < 4; i++)
+            for (int i = 0; i < fm.Actors.Length; i++)
             {
                 var actor = fm.Actors.Get(i);
                 if (actor.IsActive) activeActors.Add(actor);
@@ -612,7 +775,7 @@ namespace DonGame2D.UI
                 opponentUIs[op.ActorId].transform.localScale = Vector3.one;
 
                 int arrayIndex = -1;
-                for (int i = 0; i < 4; i++)
+                for (int i = 0; i < fm.Actors.Length; i++)
                 {
                     if (fm.Actors.Get(i).ActorId == op.ActorId)
                     {
@@ -626,7 +789,18 @@ namespace DonGame2D.UI
                     int count = fm.PlayerHandCounts.Get(arrayIndex);
                     bool isAnimating = opponentAnimatingFlags.TryGetValue(op.ActorId, out bool animFlag) && animFlag;
                     
-                    if (!isAnimating)
+                    // [NEW] 配布完了フラグによる厳格なガード
+                    if (!_hasInitialDealCompleted)
+                    {
+                        // まだ配布が始まっていない、または配布アニメーション中の表示
+                        int dCount = 0;
+                        if (isInitialDealingAnimation && _dealingHandCounts.TryGetValue(op.ActorId, out int animatedCount)) 
+                        {
+                            dCount = animatedCount;
+                        }
+                        opponentUIs[op.ActorId].Setup(op.ActorId, dCount, dCount == 1);
+                    }
+                    else if (!isAnimating)
                     {
                         opponentUIs[op.ActorId].Setup(op.ActorId, count, count == 1);
                     }
@@ -655,41 +829,39 @@ namespace DonGame2D.UI
         {
             var fm = DonFusionManager2D.Instance;
             
-            // スコア演出中は手札の更新（および新規ドローアニメの開始）を完全に止める
+            // スコア演出中は完全に停止
             if (scoreAnimationController != null && scoreAnimationController.IsAnimating)
                 return;
 
-            if (!skipAnimation && playerHandUI.Count > 0 && deckPileContainer != null)
-            {
-                int currentTotalShowing = playerHandUI.Count + inFlightAnimationCount + pendingDrawAnimations.Count;
-                if (fm.myLocalHand.Count > currentTotalShowing)
-                {
-                    for (int i = currentTotalShowing; i < fm.myLocalHand.Count; i++)
-                    {
-                        pendingDrawAnimations.Enqueue(fm.myLocalHand[i]);
-                    }
-
-                    if (!isDealingAnimationRunning)
-                    {
-                        StartCoroutine(ProcessDrawAnimationQueue());
-                    }
-                }
-            }
-            
-            if (!skipAnimation && (isDealingAnimationRunning || pendingDrawAnimations.Count > 0))
-            {
+            // [NEW] 親決め演出中は手札を表示しない
+            if (fm.IsDeterminingStarter)
                 return;
+
+            // 配布アニメーション中またはドローアニメーション中なら何もしない
+            if (!skipAnimation && (isDealingAnimationRunning || pendingDrawAnimations.Count > 0))
+                return;
+
+            // [NEW] 配布完了フラグの自動チェック（途中参加対応）
+            if (!_hasInitialDealCompleted && !fm.IsInitialDeal && !_isExpectingInitialDeal && fm.myLocalHand.Count > 0)
+            {
+                Debug.Log("[GameUI] Initial deal already passed or not expected. Unlocking UI.");
+                _hasInitialDealCompleted = true;
             }
 
-            if (!skipAnimation && playerHandUI.Count == 0 && fm.myLocalHand.Count > 0)
+            // [NEW] 最初の5枚が届いた時に、アニメーションを開始するための特別なルート
+            if (!_hasInitialDealCompleted && !skipAnimation && playerHandUI.Count == 0 && fm.myLocalHand.Count >= fm.initialHandCount)
             {
-                if (fm.myLocalHand.Count < fm.initialHandCount) return;
-                
                 if (deckPileContainer != null)
                 {
                     StartCoroutine(DealCardsAnimationCoroutine(new List<CardInfo>(fm.myLocalHand)));
                     return;
                 }
+            }
+
+            // [NEW] 論理ロック: 配布アニメーションが完了するまで、UpdateHandWithAnimation を呼ばせない
+            if (!skipAnimation && !_hasInitialDealCompleted)
+            {
+                return;
             }
 
             UpdateHandWithAnimation(fm.myLocalHand);
@@ -850,7 +1022,7 @@ namespace DonGame2D.UI
 
             for (int i = 0; i < playerHandUI.Count; i++)
             {
-                if (playerHandUI[i] == null || playerHandUI[i].IsDragging) continue;
+                if (playerHandUI[i] == null || playerHandUI[i].IsDragging || playerHandUI[i].isDiscarded) continue;
 
                 float currentAngle = startAngle - (i * angleStep);
                 float rad = currentAngle * Mathf.Deg2Rad;
@@ -913,16 +1085,36 @@ namespace DonGame2D.UI
         }
 
 
-        private System.Collections.IEnumerator DealCardsAnimationCoroutine(List<CardInfo> handToDeal)
+        private System.Collections.IEnumerator DealCardsAnimationCoroutine(List<CardInfo> myHand)
         {
             isDealingAnimationRunning = true;
-            foreach (Transform child in playerHandContainer) Destroy(child.gameObject);
-            playerHandUI.Clear();
+            isInitialDealingAnimation = true; 
+            _isExpectingInitialDeal = false; // [NEW] アニメーションが始まったのでフラグを戻す
+            
+            // 確実に古いUI（および誤って生成されたUI）をすべて消去する
+            ClearHandUI(GetLocalActorId());
+            if (handVisualParent != null) { foreach (Transform child in handVisualParent) { child.gameObject.SetActive(false); Destroy(child.gameObject); } }
+            if (playerHandContainer != null) { foreach (Transform child in playerHandContainer) { child.gameObject.SetActive(false); Destroy(child.gameObject); } }
 
-            List<CardUI> animatingCards = new List<CardUI>();
+            var fm = DonFusionManager2D.Instance;
+            if (fm == null) yield break;
+
+            // 有効な全プレイヤーを取得（配列インデックス順に配る）
+            var activeActors = new List<ActorInfo>();
+            for (int i = 0; i < fm.Actors.Length; i++)
+            {
+                if (fm.Actors[i].IsActive) activeActors.Add(fm.Actors[i]);
+            }
+
+            int myActorId = GetLocalActorId();
+            int myHandIdx = 0;
+            int initialCount = fm.initialHandCount;
+
+            List<CardUI> localAnimatingCards = new List<CardUI>();
             List<GameObject> tempDummySlots = new List<GameObject>();
 
-            for (int i = 0; i < handToDeal.Count; i++)
+            // 自分の手札用のダミースロットを先に用意（最終的なレイアウト計算のため）
+            for (int i = 0; i < myHand.Count; i++)
             {
                 GameObject dummyObj = new GameObject("DummySlot", typeof(RectTransform), typeof(LayoutElement));
                 dummyObj.transform.SetParent(playerHandContainer, false);
@@ -937,46 +1129,79 @@ namespace DonGame2D.UI
             Canvas.ForceUpdateCanvases();
 
             Transform canvasTransform = playerHandContainer.GetComponentInParent<Canvas>().transform;
-            
-            for (int i = 0; i < handToDeal.Count; i++)
+            Vector3 deckPos = deckPileContainer != null ? deckPileContainer.position : Vector3.zero;
+
+            // --- 5巡の配付ループ ---
+            _dealingHandCounts.Clear();
+            for (int round = 0; round < initialCount; round++)
             {
-                GameObject go = Instantiate(cardPrefab, canvasTransform);
-                CardUI ui = go.GetComponent<CardUI>();
-                ui.SetupFusion(handToDeal[i], true); // 最初から表向きに表示
-                Vector3 startPos = deckPileContainer.position;
-                ui.transform.position = startPos;
-                ui.transform.localScale = Vector3.one;
-                if (ui.button != null) ui.button.interactable = false;
-                animatingCards.Add(ui);
-
-                float duration = 0.25f;
-                float elapsed = 0f;
-
-                while (elapsed < duration)
+                foreach (var actor in activeActors)
                 {
-                    elapsed += Time.deltaTime;
-                    float t = elapsed / duration;
-                    float easeOutT = 1f - Mathf.Pow(1f - t, 3f);
-
-                    if (tempDummySlots[i] != null)
+                    if (!_dealingHandCounts.ContainsKey(actor.ActorId)) _dealingHandCounts[actor.ActorId] = 0;
+                    _dealingHandCounts[actor.ActorId]++;
+                    
+                    bool isMe = (actor.ActorId == myActorId);
+                    
+                    GameObject go = Instantiate(cardPrefab, canvasTransform);
+                    CardUI ui = go.GetComponent<CardUI>();
+                    
+                    Vector3 targetPos;
+                    if (isMe && myHandIdx < myHand.Count)
                     {
-                        Vector3 targetPos = tempDummySlots[i].transform.position;
-                        ui.transform.position = Vector3.Lerp(startPos, targetPos, easeOutT);
+                        ui.SetupFusion(myHand[myHandIdx], true); // 自分は表向き
+                        targetPos = tempDummySlots[myHandIdx].transform.position;
+                        localAnimatingCards.Add(ui);
+                        myHandIdx++;
+                    }
+                    else
+                    {
+                        ui.SetupFusion(new CardInfo { Rank = 0 }, false); // 相手は裏向き
+                        if (opponentUIs.ContainsKey(actor.ActorId))
+                            targetPos = opponentUIs[actor.ActorId].transform.position;
+                        else
+                            targetPos = deckPos; // 万が一見つからない場合はその場
                     }
 
-                    yield return null;
-                }
+                    ui.transform.position = deckPos;
+                    ui.transform.localScale = Vector3.one;
+                    if (ui.button != null) ui.button.interactable = false;
 
-                if (tempDummySlots[i] != null) ui.transform.position = tempDummySlots[i].transform.position;
-                ui.SetupFusion(handToDeal[i], true);
-                yield return new WaitForSeconds(0.1f);
+                    // カードを飛ばす（並列で動かしたいが、配付の「テンポ」を出すために少し待つ）
+                    StartCoroutine(AnimateSingleCardToTarget(ui, deckPos, targetPos, 0.25f, !isMe));
+                    
+                    yield return new WaitForSeconds(0.06f); // 次のプレイヤーへ配る間隔
+                }
             }
 
+            // 全て配り終わるのを少し待つ
+            yield return new WaitForSeconds(0.4f);
+
             foreach (var d in tempDummySlots) { if (d != null) Destroy(d); }
-            foreach (var c in animatingCards) { if (c != null) Destroy(c.gameObject); }
+            foreach (var c in localAnimatingCards) { if (c != null) Destroy(c.gameObject); }
 
             isDealingAnimationRunning = false;
+            isInitialDealingAnimation = false;
+            _hasInitialDealCompleted = true; // [NEW] ロック解除
             UpdateFusionHandUI(true);
+        }
+
+        private System.Collections.IEnumerator AnimateSingleCardToTarget(CardUI ui, Vector3 start, Vector3 target, float duration, bool destroyAtEnd)
+        {
+            float elapsed = 0f;
+            while (elapsed < duration)
+            {
+                if (ui == null) yield break;
+                elapsed += Time.deltaTime;
+                float t = elapsed / duration;
+                float easeOutT = 1f - Mathf.Pow(1f - t, 3f);
+                ui.transform.position = Vector3.Lerp(start, target, easeOutT);
+                yield return null;
+            }
+            if (ui != null)
+            {
+                ui.transform.position = target;
+                if (destroyAtEnd) Destroy(ui.gameObject);
+            }
         }
 
         private System.Collections.IEnumerator ProcessDrawAnimationQueue()
@@ -1044,8 +1269,10 @@ namespace DonGame2D.UI
                 yield return new WaitForSeconds(0.1f);
             }
 
+            _dealingHandCounts.Clear();
             isDealingAnimationRunning = false;
-            UpdateFusionHandUI(true);
+            isInitialDealingAnimation = false; // [NEW] 配布終了
+            OnFusionHandUpdated();
         }
 
         #region Opponent Animations
@@ -1087,18 +1314,25 @@ namespace DonGame2D.UI
                 yield return null;
             }
 
-            Destroy(go);
+            // [FIX] チラつき防止：isOpponentCardAnimationRunning を先に折って、OnDiscardPileChanged が即座に反映されるようにする
             isOpponentCardAnimationRunning = false;
+            if (pendingDiscardCard.Rank != 0)
+            {
+                OnDiscardPileChanged(pendingDiscardCard);
+                pendingDiscardCard = default;
+            }
+            else
+            {
+                OnDiscardPileChanged(card);
+            }
+
+            Destroy(go);
+            
             opponentAnimatingFlags[actorId] = false;
             if (pendingOpponentHandCounts.TryGetValue(actorId, out int pendingCount) && opponentUIs.TryGetValue(actorId, out OpponentUIInfo opUI))
             {
                 opUI.Setup(actorId, pendingCount, pendingCount == 1);
                 pendingOpponentHandCounts.Remove(actorId);
-            }
-            if (pendingDiscardCard.Rank != 0)
-            {
-                OnDiscardPileChanged(pendingDiscardCard);
-                pendingDiscardCard = default;
             }
         }
 
@@ -1162,6 +1396,7 @@ namespace DonGame2D.UI
         private bool isLocalPlayerDiscarding = false;
         public void SetLocalPlayerDiscarding(bool value) => isLocalPlayerDiscarding = value;
         private int lastActiveSuitInt = -1;
+        private bool lastIsWaitingForSuitSelection = false;
         private bool isOpponentCardAnimationRunning = false;
         private CardInfo pendingDiscardCard = default;
         private Dictionary<int, bool> opponentAnimatingFlags = new Dictionary<int, bool>();
@@ -1171,26 +1406,42 @@ namespace DonGame2D.UI
         {
             if (topCard.Rank == 0) return;
             if (isOpponentCardAnimationRunning || isLocalPlayerDiscarding) { pendingDiscardCard = topCard; return; }
+            
             CardUI ui = null;
             if (discardPileContainer != null && discardPileContainer.childCount > 0)
             {
-                foreach (Transform child in discardPileContainer) { if (discardDonButton != null && child.gameObject == discardDonButton.gameObject) continue; ui = child.GetComponent<CardUI>(); break; }
+                foreach (Transform child in discardPileContainer) 
+                { 
+                    if (discardDonButton != null && child.gameObject == discardDonButton.gameObject) continue; 
+                    if (_drawPenaltyIndicator != null && child.gameObject == _drawPenaltyIndicator.gameObject) continue;
+                    ui = child.GetComponent<CardUI>(); 
+                    if (ui != null) break;
+                }
             }
-            if (ui == null || ui.gameObject.name != "DiscardPileCard")
+
+            if (ui == null)
             {
                 if (discardPileContainer != null)
                 {
-                    foreach (Transform child in discardPileContainer) { if (discardDonButton != null && child.gameObject == discardDonButton.gameObject) continue; Destroy(child.gameObject); }
+                    foreach (Transform child in discardPileContainer) 
+                    { 
+                        if (discardDonButton != null && child.gameObject == discardDonButton.gameObject) continue; 
+                        if (_drawPenaltyIndicator != null && child.gameObject == _drawPenaltyIndicator.gameObject) continue;
+                        Destroy(child.gameObject); 
+                    }
                     GameObject go = Instantiate(cardPrefab, discardPileContainer);
-                    go.name = "DiscardPileCard"; go.transform.SetAsFirstSibling(); ui = go.GetComponent<CardUI>(); lastDiscardPileCount = -1;
+                    go.name = "DiscardPileCard"; go.transform.SetAsFirstSibling(); ui = go.GetComponent<CardUI>(); 
                 }
             }
+
             if (ui != null)
             {
                 ui.transform.localPosition = Vector3.zero; ui.isDiscarded = true; ui.SetupFusion(topCard, true);
                 var fm = DonFusionManager2D.Instance;
                 if (fm != null) { 
-                    lastDiscardPileCount = fm.DiscardCount; lastTopCardSuit = topCard.Suit; lastTopCardRank = topCard.Rank; lastActiveSuitInt = fm.ActiveSuitInt; 
+                    // [FIX] ここで lastActiveSuitInt を更新しないようにする（UpdateFusionDiscardPileUIでの演出を走らせるため）
+                    // lastDiscardPileCount = fm.DiscardCount; lastTopCardSuit = topCard.Suit; lastTopCardRank = topCard.Rank; lastActiveSuitInt = fm.ActiveSuitInt; 
+                    
                     // カード情報の変化をトリガーにUI状態（Donボタン表示等）を強制更新
                     UpdateFusionUIState();
                 }
@@ -1199,29 +1450,78 @@ namespace DonGame2D.UI
 
         private void UpdateFusionDiscardPileUI()
         {
+            // [FIX] 相手のプレイ演出中、自分のカード出し中は表示を更新しない（配布演出中 isDealingAnimationRunning は最初の一枚を表示するためガードから外す）
             if (isOpponentCardAnimationRunning || isLocalPlayerDiscarding) return;
             var fm = DonFusionManager2D.Instance;
             if (fm.DiscardCount > 0)
             {
                 var topCard = fm.DiscardPile.Get(fm.DiscardCount - 1);
                 if (topCard.Rank == 0) { lastDiscardPileCount = -1; return; }
+                
                 CardUI ui = null;
-                if (discardPileContainer.childCount > 0) { foreach (Transform child in discardPileContainer) { if (discardDonButton != null && child.gameObject == discardDonButton.gameObject) continue; ui = child.GetComponent<CardUI>(); break; } }
-                if (ui == null || ui.gameObject.name != "DiscardPileCard") { foreach (Transform child in discardPileContainer) { if (discardDonButton != null && child.gameObject == discardDonButton.gameObject) continue; Destroy(child.gameObject); } GameObject go = Instantiate(cardPrefab, discardPileContainer); go.name = "DiscardPileCard"; go.transform.SetAsFirstSibling(); ui = go.GetComponent<CardUI>(); lastDiscardPileCount = -1; }
+                // 既存のカードを探す（再利用するため）
+                if (discardPileContainer.childCount > 0) 
+                { 
+                    foreach (Transform child in discardPileContainer) 
+                    { 
+                        if (discardDonButton != null && child.gameObject == discardDonButton.gameObject) continue; 
+                        if (_drawPenaltyIndicator != null && child.gameObject == _drawPenaltyIndicator.gameObject) continue;
+                        ui = child.GetComponent<CardUI>(); 
+                        if (ui != null) break;
+                    } 
+                }
+
+                // なければ生成
+                if (ui == null) 
+                { 
+                    foreach (Transform child in discardPileContainer) 
+                    { 
+                        if (discardDonButton != null && child.gameObject == discardDonButton.gameObject) continue; 
+                        if (_drawPenaltyIndicator != null && child.gameObject == _drawPenaltyIndicator.gameObject) continue;
+                        Destroy(child.gameObject); 
+                    } 
+                    GameObject go = Instantiate(cardPrefab, discardPileContainer); 
+                    go.name = "DiscardPileCard"; 
+                    go.transform.SetAsFirstSibling(); 
+                    ui = go.GetComponent<CardUI>(); 
+                    lastDiscardPileCount = -1; 
+                }
+
                 bool cardChanged = (fm.DiscardCount != lastDiscardPileCount || topCard.Suit != lastTopCardSuit || topCard.Rank != lastTopCardRank);
                 bool activeSuitChanged = (fm.ActiveSuitInt != lastActiveSuitInt);
-                if (cardChanged || activeSuitChanged)
+                bool selectionFinished = (lastIsWaitingForSuitSelection && !fm.IsWaitingForSuitSelection);
+
+                if (cardChanged || activeSuitChanged || selectionFinished)
                 {
                     ui.transform.localPosition = Vector3.zero; ui.isDiscarded = true;
                     if (cardChanged) ui.SetupFusion(topCard, true);
-                    else if (activeSuitChanged && topCard.Rank == 8 && fm.ActiveSuitInt != -1) { Sprite newSprite = ui.database.GetCardSprite((Suit)fm.ActiveSuitInt, 8); if (newSprite != null) ui.ChangeSpriteWithFade(newSprite, 0.5f); }
-                    lastDiscardPileCount = fm.DiscardCount; lastTopCardSuit = topCard.Suit; lastTopCardRank = topCard.Rank; lastActiveSuitInt = fm.ActiveSuitInt;
+                    
+                    // カード自体が変わっていなくても、スートが変わった、またはスート選択が完了した場合はフェードで更新
+                    // [FIX] 内部的に変わっているが表示されない問題を防ぐため、ここでの条件判定を確実に
+                    if ((activeSuitChanged || selectionFinished) && topCard.Rank == 8 && fm.ActiveSuitInt != -1) 
+                    { 
+                        Sprite newSprite = ui.database.GetCardSprite((Suit)fm.ActiveSuitInt, 8); 
+                        if (newSprite != null) ui.ChangeSpriteWithFade(newSprite, 0.5f); 
+                    }
+                    
+                    lastDiscardPileCount = fm.DiscardCount; 
+                    lastTopCardSuit = topCard.Suit; 
+                    lastTopCardRank = topCard.Rank; 
+                    lastActiveSuitInt = fm.ActiveSuitInt;
                 }
+                lastIsWaitingForSuitSelection = fm.IsWaitingForSuitSelection;
             }
             else
             {
-                foreach (Transform child in discardPileContainer) { if (discardDonButton != null && child.gameObject == discardDonButton.gameObject) continue; Destroy(child.gameObject); }
+                // 全削除
+                foreach (Transform child in discardPileContainer) 
+                { 
+                    if (discardDonButton != null && child.gameObject == discardDonButton.gameObject) continue; 
+                    if (_drawPenaltyIndicator != null && child.gameObject == _drawPenaltyIndicator.gameObject) continue;
+                    Destroy(child.gameObject); 
+                }
                 lastDiscardPileCount = -1; lastActiveSuitInt = -1;
+                lastIsWaitingForSuitSelection = false;
             }
         }
 
@@ -1230,7 +1530,8 @@ namespace DonGame2D.UI
             DonPlayer localPlayer = DonGameManager.Instance.players[0];
             bool isMyTurn = DonGameManager.Instance.currentPlayerIndex == 0;
             statusText.text = isMyTurn ? "Your Turn" : $"{DonGameManager.Instance.players[DonGameManager.Instance.currentPlayerIndex].name}'s Turn";
-            penaltyText.text = $"RD 1/5 | {localPlayer.credits} Credits";
+            string maxRoundStr = (DonGameManager.Instance.MaxRounds == 0) ? "∞" : DonGameManager.Instance.MaxRounds.ToString();
+            penaltyText.text = $"RD 1/{maxRoundStr} | {localPlayer.credits} Credits";
             if (DonGameManager.Instance.drawPenaltyCount > 0) penaltyText.text += $" | Penalty: +{DonGameManager.Instance.drawPenaltyCount}";
             drawButton.interactable = isMyTurn && !DonGameManager.Instance.isRoundOver;
             Card top = DonGameManager.Instance.GetTopDiscard();
@@ -1251,6 +1552,16 @@ namespace DonGame2D.UI
         }
 
         public void ShowReach(int actorId) { temporaryNotification = $"PLAYER {actorId}: REACH!!!"; notificationTimer = 4.0f; }
+        
+        public void ShowDrawPenaltyEffect(int actorId, int amount)
+        {
+            if (scoreAnimationController == null) return;
+            Transform target = (actorId == GetLocalActorId()) ? playerHandContainer : GetOpponentCardContainer(actorId);
+            if (target != null)
+            {
+                scoreAnimationController.ShowFloatingText(target, $"+{amount}", Color.red, 60);
+            }
+        }
 
         public void ShowRoundResult(string msg, bool isFinal)
         {
@@ -1269,7 +1580,7 @@ namespace DonGame2D.UI
                 rt.sizeDelta = Vector2.zero; rt.localScale = Vector3.one;
             }
 
-            var fontFallback = mainFontRegular ?? Resources.GetBuiltinResource<Font>("Arial.ttf");
+            var fontFallback = mainFontRegular ?? Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
             resultText.font = fontFallback;
             resultText.fontSize = 50;
             resultText.color = Color.white;
@@ -1408,7 +1719,7 @@ namespace DonGame2D.UI
                 var anyText = GameObject.FindObjectOfType<Text>();
                 if (anyText != null) fontFallback = anyText.font;
             }
-            if (fontFallback == null) fontFallback = Resources.GetBuiltinResource<Font>("Arial.ttf");
+            if (fontFallback == null) fontFallback = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
 
             if (finalResultContainer != null) finalResultContainer.localScale = Vector3.one;
             if (finalResultBackButton != null) {
@@ -1468,7 +1779,7 @@ namespace DonGame2D.UI
 
             // プレイヤーデータの集計
             List<PlayerResultData> results = new List<PlayerResultData>();
-            for (int i = 0; i < 4; i++)
+            for (int i = 0; i < fm.Actors.Length; i++)
             {
                 var actor = fm.Actors.Get(i);
                 if (!actor.IsActive) continue;
@@ -1598,13 +1909,34 @@ namespace DonGame2D.UI
         {
             if (actorId == GetLocalActorId())
             {
-                foreach (var cUI in playerHandUI) if (cUI != null) Destroy(cUI.gameObject);
+                foreach (var cUI in playerHandUI) 
+                {
+                    if (cUI != null) 
+                    {
+                        cUI.gameObject.SetActive(false); // 即座に非表示にする（Destroyラグ対策）
+                        Destroy(cUI.gameObject);
+                    }
+                }
                 playerHandUI.Clear();
-                foreach (var d in dummySlots) if (d != null) Destroy(d);
+                foreach (var d in dummySlots) 
+                {
+                    if (d != null) 
+                    {
+                        d.SetActive(false);
+                        Destroy(d);
+                    }
+                }
                 dummySlots.Clear();
                 
-                // アニメーション中および待機中のカードも全て破棄
-                foreach (var c in animatingDrawCards) if (c != null) Destroy(c.gameObject);
+                // アニメーション中および待機中のカードも全て非表示にして破棄
+                foreach (var c in animatingDrawCards) 
+                {
+                    if (c != null) 
+                    {
+                        c.gameObject.SetActive(false);
+                        Destroy(c.gameObject);
+                    }
+                }
                 animatingDrawCards.Clear();
                 pendingDrawAnimations.Clear();
                 inFlightAnimationCount = 0;
@@ -1614,6 +1946,61 @@ namespace DonGame2D.UI
             {
                 foreach (Transform child in info.cardIconContainer) Destroy(child.gameObject);
             }
+        }
+
+        /// <summary>
+        /// 新しいラウンド開始時に、画面上のすべてのカードオブジェクトと状態をリセットします。
+        /// </summary>
+        public void ResetUIForNewRound()
+        {
+            Debug.Log("[GameUI] Resetting UI for new round...");
+            
+            _hasInitialDealCompleted = false; // [NEW] ラウンドの節目でロックをかける
+            _isExpectingInitialDeal = true;
+            
+            // 自分の手札をクリア
+            ClearHandUI(GetLocalActorId());
+            
+            // 捨て札コンテナをクリア（Donボタンやドローペナルティ表示は破棄しない）
+            if (discardPileContainer != null)
+            {
+                foreach (Transform child in discardPileContainer)
+                {
+                    if (discardDonButton != null && child.gameObject == discardDonButton.gameObject) continue;
+                    if (_drawPenaltyIndicator != null && child.gameObject == _drawPenaltyIndicator.gameObject) continue;
+                    Destroy(child.gameObject);
+                }
+            }
+            
+            // 公開手札（敗者の手札表示用）をクリア
+            if (revealedHandContainer != null)
+            {
+                foreach (Transform child in revealedHandContainer) Destroy(child.gameObject);
+            }
+            
+            // 全対戦相手のカード表示をリセット
+            foreach (var kvp in opponentUIs)
+            {
+                if (kvp.Value.cardIconContainer != null)
+                {
+                    foreach (Transform child in kvp.Value.cardIconContainer) Destroy(child.gameObject);
+                }
+            }
+            
+            // 各種状態フラグをリセット
+            isDealingAnimationRunning = false;
+            _isExpectingInitialDeal = true; // [NEW] これから初期配布が来ることを示す
+            IsScatterAnimationRunning = false;
+            pendingDrawAnimations.Clear();
+            animatingDrawCards.Clear();
+            inFlightAnimationCount = 0;
+
+            // パネル類の非表示
+            if (resultPanel != null) resultPanel.SetActive(false);
+            if (suitSelectionPanel != null) suitSelectionPanel.SetActive(false);
+            
+            // スコア演出停止
+            if (scoreAnimationController != null) scoreAnimationController.StopAllCoroutines();
         }
 
         public List<CardUI> GetAnimatingDrawCards() => animatingDrawCards;
@@ -1698,7 +2085,7 @@ namespace DonGame2D.UI
             if (discardPileContainer == null) return;
             var btnTrans = discardPileContainer.Find("ContextDonButton");
             GameObject btnObj = (btnTrans != null) ? btnTrans.gameObject : null;
-            if (btnObj == null) { btnObj = new GameObject("ContextDonButton", typeof(RectTransform), typeof(CanvasRenderer), typeof(Image), typeof(Button)); btnObj.transform.SetParent(discardPileContainer, false); var brt = btnObj.GetComponent<RectTransform>(); brt.anchorMin = new Vector2(0.5f, 1f); brt.anchorMax = new Vector2(0.5f, 1f); brt.pivot = new Vector2(0.5f, 0.5f); brt.anchoredPosition = new Vector2(0, 80f); brt.sizeDelta = new Vector2(160, 60); var img = btnObj.GetComponent<Image>(); img.color = new Color(0.8f, 0.2f, 0.2f, 1f); GameObject textObj = new GameObject("Text", typeof(RectTransform), typeof(CanvasRenderer), typeof(Text)); textObj.transform.SetParent(btnObj.transform, false); var txt = textObj.GetComponent<Text>(); txt.text = "Don!"; txt.alignment = TextAnchor.MiddleCenter; txt.fontSize = 28; txt.color = Color.white; txt.font = Resources.GetBuiltinResource<Font>("Arial.ttf"); var textRt = textObj.GetComponent<Text>().GetComponent<RectTransform>(); textRt.anchorMin = Vector2.zero; textRt.anchorMax = Vector2.one; textRt.offsetMin = Vector2.zero; textRt.offsetMax = Vector2.zero; }
+            if (btnObj == null) { btnObj = new GameObject("ContextDonButton", typeof(RectTransform), typeof(CanvasRenderer), typeof(Image), typeof(Button)); btnObj.transform.SetParent(discardPileContainer, false); var brt = btnObj.GetComponent<RectTransform>(); brt.anchorMin = new Vector2(0.5f, 1f); brt.anchorMax = new Vector2(0.5f, 1f); brt.pivot = new Vector2(0.5f, 0.5f); brt.anchoredPosition = new Vector2(0, 80f); brt.sizeDelta = new Vector2(160, 60); var img = btnObj.GetComponent<Image>(); img.color = new Color(0.8f, 0.2f, 0.2f, 1f); GameObject textObj = new GameObject("Text", typeof(RectTransform), typeof(CanvasRenderer), typeof(Text)); textObj.transform.SetParent(btnObj.transform, false); var txt = textObj.GetComponent<Text>(); txt.text = "Don!"; txt.alignment = TextAnchor.MiddleCenter; txt.fontSize = 28; txt.color = Color.white; txt.font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf"); var textRt = textObj.GetComponent<Text>().GetComponent<RectTransform>(); textRt.anchorMin = Vector2.zero; textRt.anchorMax = Vector2.one; textRt.offsetMin = Vector2.zero; textRt.offsetMax = Vector2.zero; }
             discardDonButton = btnObj.GetComponent<Button>();
         }
 
@@ -1736,7 +2123,7 @@ namespace DonGame2D.UI
             if (fm == null || fm.Runner == null) return -1;
             
             // Actors[] 配列から自分の PlayerRef に一致する ActorId を探す
-            for (int i = 0; i < 4; i++)
+            for (int i = 0; i < fm.Actors.Length; i++)
             {
                 var actor = fm.Actors.Get(i);
                 if (actor.IsActive && !actor.IsCPU && actor.PlayerRef == fm.Runner.LocalPlayer)
@@ -1855,6 +2242,230 @@ namespace DonGame2D.UI
             {
                 kvp.Value.SetPeripheralActive(active);
             }
+        }
+
+        /// <summary>
+        /// 現在のネットワーク上のクレジットを表示バッファにコピーします。
+        /// 演出開始直前に呼ぶことで、値を固定します。
+        /// </summary>
+        public void InitializeDisplayedCredits()
+        {
+            var fm = DonGame2D.Logic.DonFusionManager2D.Instance;
+            if (fm == null) return;
+
+            foreach (var kvp in fm.PlayerCredits)
+            {
+                _displayedCredits[kvp.Key] = kvp.Value;
+            }
+            Debug.Log("[GameUI] Displayed credits initialized/captured.");
+        }
+
+        /// <summary>
+        /// 表示クレジットを指定した値に強制設定します。演出開始時の「計算前」の状態を作るのに使用します。
+        /// </summary>
+        public void SetDisplayedCredit(int actorId, int value)
+        {
+            _displayedCredits[actorId] = value;
+            
+            // 自分自身の場合は即座にテキスト表示のみ反映
+            if (actorId == GetLocalActorId() && creditText != null)
+            {
+                creditText.text = value.ToString();
+            }
+        }
+
+        /// <summary>
+        /// 指定したプレイヤーの表示クレジットのみを更新します。
+        /// 吸い込み演出完了時などに呼び出し、演出によってもたらされた「最終結果」を反映させます。
+        /// </summary>
+        public void UpdateDisplayedCredit(int actorId, int newValue)
+        {
+            _displayedCredits[actorId] = newValue;
+            
+            // 自分の場合は即座に右上のテキストにも反映
+            if (actorId == GetLocalActorId() && creditText != null)
+            {
+                creditText.text = newValue.ToString();
+            }
+            
+            Debug.Log($"[GameUI] Displayed credit updated for Player {actorId}: {newValue}");
+        }
+
+        public int GetDisplayedCredit(int actorId)
+        {
+            if (_displayedCredits.ContainsKey(actorId)) return _displayedCredits[actorId];
+            
+            var fm = DonGame2D.Logic.DonFusionManager2D.Instance;
+            if (fm != null && fm.PlayerCredits.ContainsKey(actorId))
+            {
+                return fm.PlayerCredits[actorId];
+            }
+            return 0;
+        }
+        private Dictionary<int, CardUI> _starterCards = new Dictionary<int, CardUI>();
+
+        public void OnStarterDrawStarted(int[] actors, CardInfo[] cards)
+        {
+            StartCoroutine(Co_AnimateStarterPhase(actors, cards));
+        }
+
+        private System.Collections.IEnumerator Co_AnimateStarterPhase(int[] actors, CardInfo[] cards)
+        {
+            // 古いカードがあればクリア
+            foreach (var sc in _starterCards.Values) if (sc != null) Destroy(sc.gameObject);
+            _starterCards.Clear();
+
+            // 手札コンテナを確実にクリア（1ラウンド目開始時）
+            ClearHandUI(GetLocalActorId());
+            if (handVisualParent != null) { foreach (Transform child in handVisualParent) Destroy(child.gameObject); }
+
+            // 親Canvasのトランスフォームを取得（フォールバック付き）
+            Transform parentTransform = null;
+            if (animationOverlay != null) parentTransform = animationOverlay.transform;
+            else if (playerHandContainer != null) parentTransform = playerHandContainer.parent;
+            else {
+                Canvas canvas = GetComponentInParent<Canvas>();
+                if (canvas != null) parentTransform = canvas.transform;
+            }
+
+            // [NEW] 演出用オーバーレイをアクティブにする
+            if (animationOverlay != null) {
+                animationOverlay.SetActive(true);
+                animationOverlay.transform.SetAsLastSibling();
+            }
+
+            if (parentTransform == null || cardPrefab == null) {
+                Debug.LogError("[GameUI] Failed to start starter animation: parentTransform or cardPrefab is null.");
+                yield break;
+            }
+
+            Vector3 deckPos = deckPileContainer != null ? deckPileContainer.position : Vector3.zero;
+
+            // 1. 全員に1枚ずつ配る
+            for (int i = 0; i < actors.Length; i++)
+            {
+                int actorId = actors[i];
+                GameObject go = Instantiate(cardPrefab, parentTransform);
+                go.transform.SetAsLastSibling(); // 常に最前面に
+                CardUI ui = go.GetComponent<CardUI>();
+                ui.SetupFusion(cards[i], false); // 裏向きで配る
+                ui.SetImmediatePosition(deckPos);
+                _starterCards[actorId] = ui;
+
+                // [FIX] 均等な楕円配置に変更
+                Vector3 targetPos = GetStarterTargetPosition(i, actors.Length);
+
+                // 山札から配るアニメーション
+                float dur = 0.4f;
+                float el = 0;
+                Vector3 start = deckPos;
+                while (el < dur)
+                {
+                    el += Time.deltaTime;
+                    ui.transform.position = Vector3.Lerp(start, targetPos, el / dur);
+                    yield return null;
+                }
+                ui.transform.position = targetPos;
+                yield return new WaitForSeconds(0.08f);
+            }
+
+            yield return new WaitForSeconds(0.4f);
+
+            // 2. 一斉公開
+            foreach (var ui in _starterCards.Values)
+            {
+                ui.SetFacing(true);
+            }
+        }
+
+        public void OnStarterResult(int[] winners, int[] losers)
+        {
+            StartCoroutine(Co_AnimateStarterResult(winners, losers));
+        }
+
+        private System.Collections.IEnumerator Co_AnimateStarterResult(int[] winners, int[] losers)
+        {
+            Vector3 deckPos = deckPileContainer != null ? deckPileContainer.position : Vector3.zero;
+
+            // 1. 敗者のカードを山札に戻す
+            foreach (int loserId in losers)
+            {
+                if (_starterCards.TryGetValue(loserId, out var ui))
+                {
+                    StartCoroutine(Co_SuckToDeck(ui, deckPos));
+                }
+            }
+
+            // 敗者回収のアニメーション時間を待つ
+            yield return new WaitForSeconds(1.0f);
+
+            // 2. 1秒待機（勝者を強調）
+            yield return new WaitForSeconds(1.0f);
+
+            // 3. 勝者のカードも山札に戻す
+            foreach (int winnerId in winners)
+            {
+                if (_starterCards.TryGetValue(winnerId, out var ui))
+                {
+                    StartCoroutine(Co_SuckToDeck(ui, deckPos));
+                }
+            }
+            
+            yield return new WaitForSeconds(1.0f);
+            
+            // 全てクリア
+            foreach (var sc in _starterCards.Values) if (sc != null) Destroy(sc.gameObject);
+            _starterCards.Clear();
+
+            // [NEW] 演出終了後、オーバーレイを非アクティブに戻す
+            if (animationOverlay != null) animationOverlay.SetActive(false);
+        }
+
+        private System.Collections.IEnumerator Co_SuckToDeck(CardUI ui, Vector3 deckPos)
+        {
+            if (ui == null) yield break;
+            ui.SetFacing(false); // 裏向きに戻す
+            
+            float dur = 0.5f;
+            float el = 0;
+            Vector3 startPos = ui.transform.position;
+            Vector3 startScale = ui.transform.localScale;
+            
+            while (el < dur)
+            {
+                if (ui == null) yield break;
+                el += Time.deltaTime;
+                float t = el / dur;
+                float easeIn = t * t;
+                ui.transform.position = Vector3.Lerp(startPos, deckPos, easeIn);
+                ui.transform.localScale = Vector3.Lerp(startScale, Vector3.one * 0.1f, t);
+                yield return null;
+            }
+            if (ui != null) Destroy(ui.gameObject);
+        }
+
+        private Vector3 GetStarterTargetPosition(int index, int total)
+        {
+            if (animationOverlay == null) return Vector3.zero;
+
+            // 画面中央（World座標）を取得
+            Vector3 center = animationOverlay.transform.position;
+            
+            // キャンバスがオーバーレイであると仮定し、Rect内部でのピクセル単位の半径を計算
+            // アニメーションオーバーレイを基準とした楕円配置
+            float rx = Screen.width * 0.35f;
+            float ry = Screen.height * 0.25f;
+
+            // 角度の計算 (自分の位置 -90度(真下) を基準にする)
+            // 昇順にソートされた actorIds が渡されるため、indexが増えるほど角度を減らすことで時計回りになる
+            float angleStep = 360f / total;
+            float angleDeg = -90f - (index * angleStep);
+            float angleRad = angleDeg * Mathf.Deg2Rad;
+
+            float x = center.x + Mathf.Cos(angleRad) * rx;
+            float y = center.y + Mathf.Sin(angleRad) * ry;
+
+            return new Vector3(x, y, center.z);
         }
     }
 }

@@ -87,6 +87,49 @@ namespace DonGame2D.UI
             }
             
             if (canvas == null) canvas = GetComponentInParent<Canvas>();
+            
+            // [FIX] テキストコンポーネントがない場合は名前で検索、なければ生成
+            if (rankText == null) {
+                var t = transform.Find("RankText") ?? transform.Find("Rank");
+                if (t != null) rankText = t.GetComponent<Text>();
+            }
+            if (suitText == null) {
+                var t = transform.Find("SuitText") ?? transform.Find("Suit");
+                if (t != null) suitText = t.GetComponent<Text>();
+            }
+        }
+
+        private void EnsureTextComponents()
+        {
+            if (rankText != null && suitText != null) return;
+
+            // それでもない場合は、実行時に動的に配置する（ジョーカー表示用）
+            if (rankText == null)
+            {
+                GameObject go = new GameObject("RankText_Dynamic", typeof(RectTransform), typeof(Text), typeof(Shadow));
+                go.transform.SetParent(transform, false);
+                rankText = go.GetComponent<Text>();
+                RectTransform rt = go.GetComponent<RectTransform>();
+                rt.anchorMin = new Vector2(0, 0.5f); rt.anchorMax = new Vector2(1, 1);
+                rt.offsetMin = new Vector2(10, -50); rt.offsetMax = new Vector2(-10, -10);
+                rankText.alignment = TextAnchor.UpperLeft;
+                rankText.font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
+                rankText.fontSize = 40;
+                rankText.resizeTextForBestFit = true;
+            }
+            if (suitText == null)
+            {
+                GameObject go = new GameObject("SuitText_Dynamic", typeof(RectTransform), typeof(Text), typeof(Shadow));
+                go.transform.SetParent(transform, false);
+                suitText = go.GetComponent<Text>();
+                RectTransform rt = go.GetComponent<RectTransform>();
+                rt.anchorMin = new Vector2(0, 0); rt.anchorMax = new Vector2(1, 0.5f);
+                rt.offsetMin = new Vector2(10, 10); rt.offsetMax = new Vector2(-10, 50);
+                suitText.alignment = TextAnchor.LowerRight;
+                suitText.font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
+                suitText.fontSize = 60;
+                suitText.resizeTextForBestFit = true;
+            }
         }
 
         private Vector3 targetPosition;
@@ -183,7 +226,7 @@ namespace DonGame2D.UI
                     if (suitText) 
                     {
                         suitText.text = GetSuitSymbol(suit);
-                        suitText.color = (suit == Suit.Hearts || suit == Suit.Diamonds) ? Color.red : Color.black;
+                        suitText.color = (suit == Suit.Hearts || suit == Suit.Diamonds || (suit == Suit.Joker && rank == 15)) ? Color.red : Color.black;
                         if (rankText) rankText.color = suitText.color;
                     }
                     if (cardImage) cardImage.color = Color.white;
@@ -197,13 +240,10 @@ namespace DonGame2D.UI
                 return;
             }
 
-            // データベースがある場合はスプライトをセット
-            if (rankText != null) rankText.gameObject.SetActive(false);
-            if (suitText != null) suitText.gameObject.SetActive(false);
-
+            // データベースがある場合はスプライトを優先使用
             if (cardImage != null)
             {
-                cardImage.preserveAspect = false; // 比率を維持せず枠内いっぱいに完全一致サイズで表示する
+                cardImage.preserveAspect = false;
                 if (isFaceUp)
                 {
                     Sprite s = database.GetCardSprite(suit, rank);
@@ -211,23 +251,44 @@ namespace DonGame2D.UI
                     {
                         cardImage.sprite = s;
                         cardImage.color = Color.white;
+                        // スプライトがある場合はテキストを隠す
+                        if (rankText != null) rankText.gameObject.SetActive(false);
+                        if (suitText != null) suitText.gameObject.SetActive(false);
                     }
                     else
                     {
-                        // 同期遅延などで画像が見つからない場合は裏面を表示して白塗りを防ぐ
-                        cardImage.sprite = database.GetCardBack();
+                        // データベースにあってもスプライトがない場合は、テキスト表示にフォールバック
+                        Debug.LogWarning($"[CardUI] Sprite not found for {suit} {rank}. Falling back to text display.");
+                        cardImage.sprite = null; // スプライトをクリアしてベースの色（白）を表示
                         cardImage.color = Color.white;
+                        ShowLegacyText(suit, rank);
                     }
                 }
                 else
                 {
+                    // 明示的に裏向き指定の場合のみ裏面を表示
                     cardImage.sprite = database.GetCardBack();
                     cardImage.color = Color.white;
+                    if (rankText != null) rankText.gameObject.SetActive(false);
+                    if (suitText != null) suitText.gameObject.SetActive(false);
                 }
             }
-            else
+        }
+
+        private void ShowLegacyText(Suit suit, int rank)
+        {
+            EnsureTextComponents();
+            if (rankText) 
             {
-                Debug.LogWarning("CardUI: cardImage is not assigned!");
+                rankText.gameObject.SetActive(true);
+                rankText.text = GetRankString(rank);
+                rankText.color = (suit == Suit.Hearts || suit == Suit.Diamonds || (suit == Suit.Joker && rank == 15)) ? Color.red : Color.black;
+            }
+            if (suitText) 
+            {
+                suitText.gameObject.SetActive(true);
+                suitText.text = GetSuitSymbol(suit);
+                suitText.color = (rankText != null) ? rankText.color : Color.black;
             }
         }
 
@@ -281,7 +342,7 @@ namespace DonGame2D.UI
         public void OnClick()
         {
             var gameUI = Object.FindObjectOfType<GameUIController>();
-            if (gameUI != null && gameUI.IsInteractionBlocked) return;
+            if (gameUI != null && (gameUI.IsInteractionBlocked || (DonFusionManager2D.Instance != null && (DonFusionManager2D.Instance.IsInitialDeal || DonFusionManager2D.Instance.IsDrawing)))) return;
 
             if (isUsingFusion && DonFusionManager2D.Instance != null)
             {
@@ -301,6 +362,8 @@ namespace DonGame2D.UI
                 case 11: return "J";
                 case 12: return "Q";
                 case 13: return "K";
+                case 14:
+                case 15: return "JK";
                 default: return rank.ToString();
             }
         }
@@ -313,6 +376,7 @@ namespace DonGame2D.UI
                 case Suit.Hearts: return "♥";
                 case Suit.Diamonds: return "♦";
                 case Suit.Clubs: return "♣";
+                case Suit.Joker: return "★";
                 default: return "";
             }
         }

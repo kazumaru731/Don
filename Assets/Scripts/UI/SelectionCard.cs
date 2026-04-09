@@ -186,6 +186,16 @@ namespace DonGame2D.UI
 
         public void ResetCardState()
         {
+            if (rectTransform == null) 
+            {
+                rectTransform = GetComponent<RectTransform>();
+                if (baseRotation.x == 0 && baseRotation.y == 0 && baseRotation.z == 0 && baseRotation.w == 0)
+                {
+                    baseAnchoredPos = rectTransform.anchoredPosition;
+                    baseRotation = rectTransform.localRotation;
+                }
+                originalParent = transform.parent;
+            }
             StopAllCoroutines();
             activeCoroutine = null;
             isEnteringCenter = false;

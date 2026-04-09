@@ -15,7 +15,9 @@ namespace DonGame2D.Network
     {
         public static DonFusionNetworkManager Instance { get; private set; }
         private NetworkRunner _runner;
-        public NetworkRunner Runner => _runner;        [Header("Fusion Settings")]
+        public NetworkRunner Runner => _runner;
+
+        [Header("Fusion Settings")]
         [Tooltip("作成または参加するルーム名（空の場合は自動生成）")]
         public string roomName = "DonRoom";
 
@@ -43,9 +45,9 @@ namespace DonGame2D.Network
         /// <summary>
         /// 指定されたモードでゲームを開始します。
         /// </summary>
-                public async System.Threading.Tasks.Task<bool> StartGame(GameMode mode)
+        public async System.Threading.Tasks.Task<bool> StartGame(GameMode mode)
         {
-            return await StartGame(mode, roomName, 4); // デフォルトは4人
+            return await StartGame(mode, roomName, 8); // デフォルトは8人
         }
 
 
@@ -53,8 +55,7 @@ namespace DonGame2D.Network
         /// 指定されたモードとルーム名でゲームを開始します（フレンドマッチ用）。
         /// isHostがfalseの場合は、既存のルームへの参加のみを許可します（新規作成はしない）。
         /// </summary>
-                public async System.Threading.Tasks.Task<bool> StartGame(GameMode mode, string sessionName, int playersCount, bool isHost = true)
-
+        public async System.Threading.Tasks.Task<bool> StartGame(GameMode mode, string sessionName, int playersCount, bool isHost = true)
         {
             // もし以前のRunnerが残っていればシャットダウンして破棄する
             if (_runner != null)
@@ -80,22 +81,24 @@ namespace DonGame2D.Network
             sceneInfo.AddSceneRef(scene, LoadSceneMode.Additive);
 
             // セッション開始
-            // セッション開始
             var startGameArgs = new StartGameArgs()
             {
                 GameMode = mode,
                 SessionName = sessionName,
-                                PlayerCount = playersCount,
+                PlayerCount = playersCount,
 
                 Scene = scene,
                 SceneManager = runnerObj.AddComponent<NetworkSceneManagerDefault>(),
                 EnableClientSessionCreation = isHost, // ホストでなければ新規ルームを作成させない
             };
-                        var result = await _runner.StartGame(startGameArgs);
+            var result = await _runner.StartGame(startGameArgs);
 
             if (result.Ok)
             {
                 Debug.Log($"<color=green>Fusion セッション開始成功！ ルーム: {sessionName}</color>");
+                
+                // 人数設定は DonFusionManager2D.ForceStartGameByHost で直接行われるため、ここでの遅延設定は不要
+                
                 return true;
             }
             else
@@ -104,6 +107,7 @@ namespace DonGame2D.Network
                 return false;
             }
         }
+
 
         // ==============================
         // INetworkRunnerCallbacks の実装
@@ -152,5 +156,18 @@ namespace DonGame2D.Network
         public void OnObjectExitAOI(NetworkRunner runner, NetworkObject obj, PlayerRef player) { }
         public void OnObjectEnterAOI(NetworkRunner runner, NetworkObject obj, PlayerRef player) { }
         public void OnUserSimulationMessage(NetworkRunner runner, SimulationMessagePtr message) { }
+
+        /// <summary>
+        /// 現在のネットワークセッションを終了します。
+        /// </summary>
+        public void ShutdownNetRunner()
+        {
+            if (_runner != null)
+            {
+                _runner.Shutdown(destroyGameObject: true);
+                _runner = null;
+                Debug.Log("Fusion Runner has been shut down.");
+            }
+        }
     }
 }

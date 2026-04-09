@@ -13,6 +13,7 @@ namespace DonGame2D.Logic
         [Range(3, 8)]
         public int playerCount = 4;
         public int initialHandCount = 5;
+        public int MaxRounds = 5;
 
         [Header("Runtime State")]
         public List<DonPlayer> players = new List<DonPlayer>();

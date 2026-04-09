@@ -7,7 +7,8 @@ namespace DonGame2D.Models
         Spades,
         Hearts,
         Diamonds,
-        Clubs
+        Clubs,
+        Joker = 4
     }
 
     [Serializable]

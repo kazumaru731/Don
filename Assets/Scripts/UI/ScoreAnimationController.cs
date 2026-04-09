@@ -19,6 +19,22 @@ namespace DonGame2D.UI
         private Text _winnerNameLabelText;
         private GameObject _winnerNameLabelObj;
 
+        [Header("New Assets")]
+        public Sprite chipSprite;
+
+        private class ActorCreditUI
+        {
+            public GameObject root;
+            public Text creditText;
+            public Text nameText;
+            public int currentDisplayValue;
+            public RectTransform rectTransform;
+        }
+
+        private Dictionary<int, ActorCreditUI> _sessionActorsUI = new Dictionary<int, ActorCreditUI>();
+        private GameObject _uiContainer;
+        private RectTransform _creditRoot; // [NEW] スコアUIを他の演出物から隔離するための親コンテナ
+
         public bool IsAnimating { get; private set; }
 
         private void Awake()
@@ -30,7 +46,12 @@ namespace DonGame2D.UI
         public void PlayRoundEndAnimation(int winType, int winnerId, int loserId, int donValue,
             string loserHandStr, int totalPenalty, string resultMsg, bool isFinal, string winnerNames = "", string winnerHandStr = "")
         {
-            if (winType == 2) StartCoroutine(Co_PlayOutWinAnimation(winnerId, loserHandStr, isFinal));
+            if (IsAnimating) return;
+
+            // [FIX] 演出フラグが立つ「前」に、現在の座席位置と向きを確定させる
+            if (uiController != null) uiController.UpdateOpponentsUI();
+
+            if (winType == 2) StartCoroutine(Co_PlayOutWinAnimation(winnerId, loserHandStr, totalPenalty, isFinal));
             else StartCoroutine(Co_PlayDonWinAnimation(winType, winnerId, loserId, donValue, loserHandStr, totalPenalty, resultMsg, isFinal, winnerNames, winnerHandStr));
         }
 
@@ -42,55 +63,113 @@ namespace DonGame2D.UI
                 while (uiController.IsScatterAnimationRunning) yield return null;
             if (uiController.drawButton != null) uiController.drawButton.interactable = false;
             if (uiController.donButton != null) uiController.donButton.interactable = false;
+            
             ClearRevealedHand();
-            if (uiController.revealedHandContainer != null)
-            {
-                var lg = uiController.revealedHandContainer.GetComponent<HorizontalLayoutGroup>();
-                if (lg != null) lg.enabled = false;
-                var vlg = uiController.revealedHandContainer.GetComponent<VerticalLayoutGroup>();
-                if (vlg != null) vlg.enabled = false;
-                var glg = uiController.revealedHandContainer.GetComponent<GridLayoutGroup>();
-                if (glg != null) glg.enabled = false;
-            }
+            SetupUIContainer();
+            _sessionActorsUI.Clear();
+
             SetOverlay(true);
 
-            var scattered = uiController.GetScatteredCards();
-            List<RectTransform> winnerScatteredRects = new List<RectTransform>();
-            foreach (var go in scattered) if (go != null) { go.transform.SetParent(uiController.revealedHandContainer, true); winnerScatteredRects.Add(go.GetComponent<RectTransform>()); go.SetActive(false); }
-            uiController.GetScatteredCards().Clear();
+            // 1. クレジットカードUIの配置
+            var fm = DonFusionManager2D.Instance;
+            int winnerCurrentCredits = (fm != null && fm.PlayerCredits.ContainsKey(winnerId)) ? fm.PlayerCredits[winnerId] : 0;
+            int loserCurrentCredits = (fm != null && fm.PlayerCredits.ContainsKey(loserId)) ? fm.PlayerCredits[loserId] : 0;
 
-            int globalTotal = 0;
-            string winnerDisplayName = string.IsNullOrEmpty(winnerNames) ? $"Player {winnerId}" : winnerNames;
-            ShowTotalScore(globalTotal, winnerDisplayName);
+            // [FIX] 表示上の開始値を決定
+            // 敗者はサーバーで既に減算済みなので、表示は「減算前」から開始する
+            int loserStartVal = loserCurrentCredits + totalPenalty;
+            
+            // 勝者はサーバーでまだ加算されていない（演出後に加算される）ので、表示は「現在の値（加算前）」から開始する
+            int winnerStartVal = winnerCurrentCredits;
 
-            // 1. 勝者の手札表示と山札へ戻るアニメーション
-            yield return StartCoroutine(Co_AnimateWinnerReveal(winnerId, winnerHandStr));
+            // クレジット表示をアニメーション開始時の値でロック
+            uiController.SetDisplayedCredit(winnerId, winnerStartVal);
+            uiController.SetDisplayedCredit(loserId, loserStartVal);
+
+            // 勝者を上部に配置
+            var wUI = CreateActorCreditCardUI(winnerId, new Vector2(0, 200), true, winnerStartVal);
+            if (!string.IsNullOrEmpty(winnerNames)) wUI.nameText.text = winnerNames;
+
+            // 敗者を下部に配置 (Don勝利は1人の敗者)
+            var lUI = CreateActorCreditCardUI(loserId, new Vector2(0, -100), false, loserStartVal);
+
+            // [FIX] 生成・配置直後のワールド座標を確定させるため、レイアウトを強制更新する
+            if (_uiContainer != null) {
+                UnityEngine.UI.LayoutRebuilder.ForceRebuildLayoutImmediate(_uiContainer.GetComponent<RectTransform>());
+            }
+
+            yield return new WaitForSeconds(0.5f);
+
+            // [FIX] ドン返しの場合（winType == 1）、まず最初に元のDonプレイヤー（このラウンドの敗者）の手札を「DON!」として公開する演出を追加
+            if (winType == 1 && !string.IsNullOrEmpty(loserHandStr))
+            {
+                var parts = loserHandStr.Split('|');
+                string targetHandStr = "";
+                foreach (var p in parts) {
+                    var items = p.Split(':');
+                    if (items.Length > 1 && items[0] == loserId.ToString()) {
+                        targetHandStr = items[1]; break;
+                    }
+                }
+                if (!string.IsNullOrEmpty(targetHandStr)) {
+                    yield return StartCoroutine(Co_AnimateWinnerReveal(loserId, targetHandStr, "DON!"));
+                    yield return new WaitForSeconds(0.4f);
+                }
+            }
+
+            // 2. 勝者の手札表示（演出用）: ドン返しなら専用のテキストを表示
+            string winPrefix = (winType == 1) ? "DON-GAESHI!" : "DON!";
+            yield return StartCoroutine(Co_AnimateWinnerReveal(winnerId, winnerHandStr, winPrefix));
             yield return new WaitForSeconds(0.2f);
 
             int multiplier = (winType == 1) ? 10 : 2;
             string multLabel = (winType == 1) ? "DON-GAESHI x10" : "DON x2";
             int baseVal = donValue * 10;
+            int mainPenalty = baseVal * multiplier;
+            int totalHandPenalty = 0;
 
-            // 2. Donされた捨て札の計算演出
-            // 勝者の演出完了後に捨て札を取得することで、ClearRevealedHand による破壊を回避する
-            RectTransform donorCard = null;
+            // 3. Donされた捨て札の計算演出 -> 敗者のカードへ
             if (uiController.discardPileContainer.childCount > 0) {
-                Transform lastChild = uiController.discardPileContainer.GetChild(uiController.discardPileContainer.childCount - 1);
-                donorCard = lastChild.GetComponent<RectTransform>();
+                RectTransform donorCard = null;
+                for (int i = uiController.discardPileContainer.childCount - 1; i >= 0; i--) {
+                    Transform c = uiController.discardPileContainer.GetChild(i);
+                    if (c.GetComponent<CardUI>() != null) {
+                        donorCard = c.GetComponent<RectTransform>();
+                        break;
+                    }
+                }
+                
                 if (donorCard != null) {
-                    donorCard.SetParent(uiController.revealedHandContainer, true);
-                    donorCard.gameObject.SetActive(true);
-                    yield return StartCoroutine(Co_AnimateDonCalculation(baseVal, multiplier, multLabel, donorCard));
-                    globalTotal += baseVal * multiplier;
-                    UpdateTotalScore(globalTotal);
-                    yield return new WaitForSeconds(0.6f);
+                    if (_uiContainer == null) SetupUIContainer();
+                    
+                    donorCard.SetParent(_uiContainer.transform, true);
+                    donorCard.anchorMin = new Vector2(0.5f, 0.5f);
+                    donorCard.anchorMax = new Vector2(0.5f, 0.5f);
+                    donorCard.pivot = new Vector2(0.5f, 0.5f);
+                    donorCard.localRotation = Quaternion.identity;
+                    donorCard.localScale = Vector3.one;
+                    donorCard.SetAsLastSibling();
+
+                    // 3. 中央への強調移動
+                    yield return StartCoroutine(Co_AnimateDonCalculation(baseVal, multiplier, "", donorCard));
+                    yield return new WaitForSeconds(0.15f);
+
+                    // 4. 吸い込みフェーズ（敗者へ）
+                    if (lUI != null && lUI.rectTransform != null) {
+                        donorCard.SetAsLastSibling();
+                        yield return StartCoroutine(Co_SuckElementToTarget(donorCard, lUI.rectTransform.position, 0.5f));
+                        
+                        // 敗者側のスコアを減らす（勝者への転送は最後に一括）
+                        int curL = lUI.currentDisplayValue;
+                        yield return StartCoroutine(Co_UpdateActorCredit(loserId, curL - mainPenalty, 0.25f));
+                        ShowFloatingText(lUI.rectTransform, $"-{mainPenalty}", Color.red, 40);
+                    }
+                    
+                    Destroy(donorCard.gameObject);
                 }
             }
 
-            foreach (var rect in winnerScatteredRects) if (rect != null) { rect.gameObject.SetActive(true); StartCoroutine(Co_SuckElementToTarget(rect, _totalScoreLabelObj.transform.position, 0.4f)); yield return new WaitForSeconds(0.04f); }
-            yield return new WaitForSeconds(0.3f);
-
-            var preCapturedRects = new Dictionary<int, List<RectTransform>>();
+            // 4. 敗者の手札があればそれも同様に処理
             if (!string.IsNullOrEmpty(loserHandStr)) {
                 var playersData = loserHandStr.Split('|');
                 foreach (var playerData in playersData) {
@@ -98,88 +177,168 @@ namespace DonGame2D.UI
                     var parts = playerData.Split(':');
                     if (parts.Length < 2) continue;
                     int actor = int.Parse(parts[0]);
-                    var cards = ParseHandStr(parts[1]);
-                    var rects = new List<RectTransform>();
-                    yield return StartCoroutine(Co_CaptureHandCards(actor, cards, rects));
-                    preCapturedRects[actor] = rects;
-                }
-            }
-            if (uiController != null) uiController.SetGameMainUIActive(false);
+                    if (actor != loserId) continue;
 
-            foreach (var kvp in preCapturedRects) {
-                int actor = kvp.Key;
-                // Don された対象プレイヤー（loserId）のみを加算対象とする
-                if (actor != loserId) { Debug.Log($"[Animation] Skipping non-target actor {actor} in calculation."); continue; }
-                var cardRects = kvp.Value;
-                Debug.Log($"[Animation] Processing target loser actor {actor} with {cardRects.Count} cards.");
-                GameObject nameLabel = ShowCenterTextPersistent($"Player {actor}", Color.white, 60);
-                yield return new WaitForSeconds(0.4f);
-                // 敗者の手札は中央（小計ラベルの下）に表示
-                yield return StartCoroutine(Co_AnimateCardsToCenter(cardRects, new Vector2(0f, -300f)));
-                yield return new WaitForSeconds(0.4f);
-                int subTotal = 0;
-                // 小計表示は削除
-                foreach (var rt in cardRects) {
-                    if (rt == null) continue;
-                    var cui = rt.GetComponent<CardUI>();
-                    int rank = (cui != null) ? cui.CardInfo.Rank : 0;
-                    subTotal += rank * 10;
-                    // カード吸い込み時に合計ラベルを更新するため累積値を渡す
-                    yield return StartCoroutine(Co_AnimateOneCard(rt, rank, globalTotal + subTotal));
+                    var cards = ParseHandStr(parts[1]);
+                    List<RectTransform> rects = new List<RectTransform>();
+                    yield return StartCoroutine(Co_CaptureHandCards(actor, cards, rects));
+
+                    if (rects.Count > 0)
+                    {
+                        yield return StartCoroutine(Co_AnimateCardsToCenter(rects, lUI.rectTransform.anchoredPosition + new Vector2(0, -200)));
+                        
+                        foreach (var rt in rects)
+                        {
+                            if (rt == null) continue;
+                            var cui = rt.GetComponent<CardUI>();
+                            int rank = (cui != null) ? cui.CardInfo.Rank : 0;
+                            int cardPenalty = (winType == 1) ? 0 : rank * 10;
+
+                            yield return StartCoroutine(Co_SuckElementToTarget(rt, lUI.rectTransform.position, 0.3f));
+                            Destroy(rt.gameObject);
+
+                            if (cardPenalty > 0)
+                            {
+                                totalHandPenalty += cardPenalty;
+                                int cur = lUI.currentDisplayValue;
+                                yield return StartCoroutine(Co_UpdateActorCredit(loserId, cur - cardPenalty, 0.2f));
+                                ShowFloatingText(lUI.rectTransform, $"-{cardPenalty}", Color.red, 40);
+                            }
+                        }
+                    }
                 }
-                yield return new WaitForSeconds(0.4f);
-                // 小計ラベルと数字の吸い込み演出は削除
-                globalTotal += subTotal;
-                UpdateTotalScore(globalTotal);
-                if (nameLabel != null) Destroy(nameLabel);
-                yield return new WaitForSeconds(0.2f);
             }
-            yield return new WaitForSeconds(0.6f);
-            ShowCenterText($"{winnerDisplayName}  DON  WIN!", Color.cyan);
-                yield return new WaitForSeconds(2.5f);
-                Cleanup();
-                uiController.ShowRoundResult(resultMsg, isFinal);
-                if (DonFusionManager2D.Instance != null) DonFusionManager2D.Instance.RPC_ReportAnimationFinished();
-            } finally {
-                IsAnimating = false;
-                if (uiController != null) uiController.SetGameMainUIActive(true);
+
+            // 5. 最後に「すべての合計分（Don分 + 手札分）」を一括で勝者へ飛ばす
+            int grandTotalToWinner = mainPenalty + totalHandPenalty;
+            if (grandTotalToWinner > 0)
+            {
+                yield return StartCoroutine(Co_SpawnChipAndSuck(loserId, winnerId, grandTotalToWinner));
+                // 勝者の表示値を計算上の最終値に更新して固定（サーバー同期前の不整合防止）
+                yield return StartCoroutine(Co_UpdateActorCredit(winnerId, winnerStartVal + grandTotalToWinner, 0.4f, false));
             }
+
+            yield return new WaitForSeconds(0.5f);
+            ShowCenterText($"{winnerNames ?? ("Player " + winnerId)}  WIN!", Color.cyan);
+            yield return new WaitForSeconds(0.5f);
+
+            // [FIX] 吸い込み演出を廃止し、数値の最終同期とフェードアウトのみを行う
+            if (_sessionActorsUI.ContainsKey(winnerId))
+            {
+                wUI = _sessionActorsUI[winnerId];
+                int localActorId = uiController.GetLocalActorId();
+                
+                // 数値を最終同期（サーバーとの不整合防止のため、計算値を優先）
+                int finalValue = winnerStartVal + grandTotalToWinner;
+                uiController.UpdateDisplayedCredit(winnerId, finalValue);
+                
+                if (DonFusionManager2D.Instance != null && DonFusionManager2D.Instance.PlayerCredits.ContainsKey(winnerId)) {
+                    int serverVal = DonFusionManager2D.Instance.PlayerCredits[winnerId];
+                    if (serverVal != 0) uiController.UpdateDisplayedCredit(winnerId, serverVal);
+                }
+                
+                // 全員フェードアウトして消去
+                yield return StartCoroutine(Co_FadeOutAndDestroy(wUI.root, 0.4f));
+            }
+
+            Cleanup();
+
+            uiController.ShowRoundResult(resultMsg, isFinal);
+            if (DonFusionManager2D.Instance != null) DonFusionManager2D.Instance.RPC_ReportAnimationFinished();
+            }
+            finally { IsAnimating = false; if (uiController != null) uiController.SetGameMainUIActive(true); }
         }
 
-        private IEnumerator Co_AnimateWinnerReveal(int winnerId, string winnerHandStr)
+        private IEnumerator Co_AnimateWinnerReveal(int winnerId, string winnerHandStr, string prefixText = null)
         {
             int localId = uiController.GetLocalActorId();
-            // リモートプレイヤーの場合は、演出開始前に既存の裏向き手札UI（アイコン等）を即座に非表示にしてダブりを防ぐ
-            // ローカルプレイヤーの場合は移動させるため、この時点ではクリアしない
-            if (winnerId != localId) 
+
+            // 2026-03-30 改善: LayoutGroup の干渉を完全に防ぐため無効化
+            if (uiController.revealedHandContainer != null)
+            {
+                var lg = uiController.revealedHandContainer.GetComponent<UnityEngine.UI.LayoutGroup>();
+                if (lg != null) lg.enabled = false;
+            }
+
+            UnityEngine.Vector2 revealPos = UnityEngine.Vector2.zero;
+            float baseRot = 0f;
+
+            if (winnerId == localId)
+            {
+                revealPos = new Vector2(0f, -250f); // 手前（下）
+                baseRot = 0f;
+            }
+            else
+            {
+                var container = uiController.GetOpponentCardContainer(winnerId);
+                if (container != null)
+                {
+                    // [FIX] 親を _uiContainer に変更するため、そちら基準で座標取得
+                    RectTransform rootRT = _uiContainer.GetComponent<RectTransform>();
+                    revealPos = rootRT.InverseTransformPoint(container.position);
+
+                    // オフセット：画面の中心へ寄せる
+                    Vector2 overlayCenter = rootRT.rect.center;
+                    Vector2 toCenter = (overlayCenter - revealPos).normalized;
+                    revealPos += toCenter * 250f;
+
+                    // 相手の向きを取得
+                    var oppUI = container.GetComponentInParent<OpponentUIInfo>();
+                    if (oppUI != null)
+                    {
+                        baseRot = oppUI.transform.localRotation.eulerAngles.z;
+                    }
+                    else
+                    {
+                        baseRot = GuessRotationByActorId(winnerId);
+                    }
+                }
+                else
+                {
+                    // フォールバック：座席位置から推測
+                    revealPos = GuessRevealPositionByActorId(winnerId);
+                    baseRot = GuessRotationByActorId(winnerId);
+                }
+            }
+
+            // リモートプレイヤーの場合は、座標確定後に既存のアイコン等を非表示にする
+            if (winnerId != localId)
             {
                 var oppContainer = uiController.GetOpponentCardContainer(winnerId);
                 if (oppContainer != null) oppContainer.gameObject.SetActive(false);
                 uiController.ClearHandUI(winnerId);
             }
-            
+
             List<RectTransform> handRects = new List<RectTransform>();
-            
+
             if (winnerId == localId)
             {
                 // ローカルプレイヤーの場合
                 var myHand = uiController.GetPlayerHandUI();
                 if (myHand != null && myHand.Count > 0)
                 {
-                    foreach (var c in myHand) if (c != null) {
-                        c.transform.SetParent(uiController.revealedHandContainer, true);
-                        handRects.Add(c.GetComponent<RectTransform>());
+                    foreach (var c in myHand)
+                    {
+                        if (c != null)
+                        {
+                            c.transform.SetParent(_uiContainer.transform, true);
+                            handRects.Add(c.GetComponent<RectTransform>());
+                        }
                     }
                     myHand.Clear();
                 }
-                
+
                 // アニメーション中のカード（ドロー演出中など）も捕捉
                 var animating = uiController.GetAnimatingDrawCards();
                 if (animating != null && animating.Count > 0)
                 {
-                    foreach (var c in animating) if (c != null) {
-                        c.transform.SetParent(uiController.revealedHandContainer, true);
-                        handRects.Add(c.GetComponent<RectTransform>());
+                    foreach (var c in animating)
+                    {
+                        if (c != null)
+                        {
+                            c.transform.SetParent(_uiContainer.transform, true);
+                            handRects.Add(c.GetComponent<RectTransform>());
+                        }
                     }
                     animating.Clear();
                 }
@@ -192,7 +351,7 @@ namespace DonGame2D.UI
                         var rt = child.GetComponent<RectTransform>();
                         if (rt != null && !handRects.Contains(rt))
                         {
-                            rt.SetParent(uiController.revealedHandContainer, true);
+                            rt.SetParent(_uiContainer.transform, true);
                             handRects.Add(rt);
                         }
                     }
@@ -207,7 +366,7 @@ namespace DonGame2D.UI
                     var cardObj = uiController.CreateCardUI(c);
                     if (cardObj != null)
                     {
-                        cardObj.transform.SetParent(uiController.revealedHandContainer, false);
+                        cardObj.transform.SetParent(_uiContainer.transform, false);
                         cardObj.SetActive(false); // 初期は非表示
                         var cui = cardObj.GetComponent<CardUI>();
                         if (cui != null) cui.SetFacing(false); // 最初は裏向き
@@ -215,44 +374,24 @@ namespace DonGame2D.UI
                     }
                 }
             }
-            
-            // 重要: 勝者の既存の裏向き手札UI（アイコンやダミースロット等）をここでクリアする。
-            // 既に capture して revealedHandContainer に移動/生成したカードは親が違うため破壊されない。
-            uiController.ClearHandUI(winnerId);
-            
-            if (handRects.Count == 0) yield break;
-            
-            // 勝者の前に出すための位置と角度を基準にする
-            Vector2 revealPos = Vector2.zero;
-            float baseRot = 0f;
-            if (winnerId == localId) {
-                revealPos = new Vector2(0f, -250f); // 手前（下）
-                baseRot = 0f;
-            } else {
-                var container = uiController.GetOpponentCardContainer(winnerId);
-                if (container != null) {
-                    revealPos = uiController.revealedHandContainer.InverseTransformPoint(container.position);
-                    // 中心方向へオフセット (画面端すぎないように、より「前に」)
-                    Vector2 toCenter = (Vector2.zero - revealPos).normalized;
-                    revealPos += toCenter * 300f;
 
-                    // プレイヤーの向き（回転）を取得
-                    var oppUI = container.GetComponentInParent<OpponentUIInfo>();
-                    if (oppUI != null) baseRot = oppUI.transform.localRotation.eulerAngles.z;
-                }
-            }
-            Debug.Log($"[Animation] Winner {winnerId} revealPos: {revealPos}, baseRot: {baseRot}");
-            
+            // 重要: 勝者の既存の裏向き手札UI（アイコンやダミースロット等）をここでクリアする。
+            uiController.ClearHandUI(winnerId);
+
+            if (handRects.Count == 0) yield break;
+
             // ラベルのオフセットも回転に合わせる (プレイヤーから見て「上」へ)
             Vector2 labelOffset = Quaternion.Euler(0, 0, baseRot) * new Vector2(0, 120f);
-            GameObject nameLabel = ShowCenterTextPersistent($"Winner: Player {winnerId}", Color.cyan, 60, revealPos + labelOffset);
-            if (nameLabel != null) nameLabel.transform.localRotation = Quaternion.Euler(0, 0, baseRot);
             
+            // カスタムのテキストがあればそれを利用する
+            string labelTxt = string.IsNullOrEmpty(prefixText) ? $"Winner: Player {winnerId}" : $"{prefixText} Player {winnerId}";
+            GameObject nameLabel = ShowCenterTextPersistent(labelTxt, Color.cyan, 60, revealPos + labelOffset);
+            if (nameLabel != null) nameLabel.transform.localRotation = Quaternion.Euler(0, 0, baseRot);
+
             // 1. 指定の位置・角度に移動
             foreach (var rt in handRects)
             {
                 if (rt == null) continue;
-                // 初期位置を一旦 revealPos に飛ばしてから表示することで中央でのチラつきを防ぐ
                 rt.anchoredPosition = revealPos;
                 rt.gameObject.SetActive(true);
             }
@@ -279,22 +418,38 @@ namespace DonGame2D.UI
                 yield return new WaitForSeconds(0.05f);
             }
             yield return new WaitForSeconds(0.6f);
-            
+
             foreach (var rt in handRects) if (rt != null) rt.gameObject.SetActive(false);
             if (nameLabel != null) Destroy(nameLabel);
             ClearRevealedHand(); // 確実に消去
             Debug.Log("[Animation] Co_AnimateWinnerReveal finished.");
         }
 
-        private IEnumerator Co_PlayOutWinAnimation(int winnerId, string loserHandStr, bool isFinal)
+        private IEnumerator Co_PlayOutWinAnimation(int winnerId, string loserHandStr, int totalPenalty, bool isFinal)
         {
             IsAnimating = true;
             try {
                 if (uiController.drawButton != null) uiController.drawButton.interactable = false;
             if (uiController.donButton != null) uiController.donButton.interactable = false;
+            
             ClearRevealedHand();
+            SetupUIContainer();
+            _sessionActorsUI.Clear();
+
             SetOverlay(true);
 
+            // 1. クレジットカードUIの配置
+            var fm = DonFusionManager2D.Instance;
+            int winnerCurrentCredits = (fm != null && fm.PlayerCredits.ContainsKey(winnerId)) ? fm.PlayerCredits[winnerId] : 0;
+            // [FIX] 表示上の開始値を決定
+            // 勝者はまだサーバーで加算されていないので、現在の値を開始値とする（逆算によるマイナス表示を防ぐ）
+            int winnerStartVal = winnerCurrentCredits;
+
+            // 勝者を上部に配置
+            var wUI = CreateActorCreditCardUI(winnerId, new Vector2(0, 200), true, winnerStartVal);
+
+            // 敗者を抽出
+            List<int> loserIds = new List<int>();
             var preCapturedRects = new Dictionary<int, List<RectTransform>>();
             if (!string.IsNullOrEmpty(loserHandStr))
             {
@@ -305,66 +460,162 @@ namespace DonGame2D.UI
                     var parts = playerData.Split(':');
                     if (parts.Length < 2) continue;
                     int actorId = int.Parse(parts[0]);
+                    loserIds.Add(actorId);
                     var cards = ParseHandStr(parts[1]);
-                    var rects = new List<RectTransform>();
+                    List<RectTransform> rects = new List<RectTransform>();
                     yield return StartCoroutine(Co_CaptureHandCards(actorId, cards, rects));
                     preCapturedRects[actorId] = rects;
                 }
             }
 
-            if (uiController != null) uiController.SetGameMainUIActive(false);
-
-            int globalTotal = 0;
-            string winnerName = "Player " + winnerId;
-            if (uiController != null)
+            // 敗者カードのレイアウト計算
+            int loserCount = loserIds.Count;
+            for (int i = 0; i < loserCount; i++)
             {
-                if (uiController.opponentUIs.TryGetValue(winnerId, out var info))
-                    winnerName = info.nameText.text;
-                else if (winnerId == uiController.GetLocalActorId())
-                    winnerName = "You";
+                int actorId = loserIds[i];
+                float x = 0;
+                float y = 0;
+                
+                if (loserCount <= 4)
+                {
+                    // 1段配置
+                    float totalWidth = (loserCount - 1) * 220f;
+                    x = -totalWidth / 2f + i * 220f;
+                    y = -80f;
+                }
+                else
+                {
+                    // 2段配置
+                    int row = i / 4;
+                    int col = i % 4;
+                    int countInRow = (row == 0) ? 4 : (loserCount - 4);
+                    float totalWidth = (countInRow - 1) * 220f;
+                    x = -totalWidth / 2f + col * 220f;
+                    y = (row == 0) ? 20f : -180f;
+                }
+
+                // 敗者のペナルティを逆算して初期値を設定
+                int loserStartVal = 0;
+                if (fm != null && fm.PlayerCredits.ContainsKey(actorId)) {
+                    int currentCredits = fm.PlayerCredits[actorId];
+                    // その敗者の手札文字列を探してペナルティを計算
+                    int penalty = 0;
+                    var parts = loserHandStr.Split('|');
+                    foreach (var p in parts) {
+                        var sub = p.Split(':');
+                        if (sub.Length >= 2 && int.Parse(sub[0]) == actorId) {
+                            penalty = ParseHandStr(sub[1]).Sum(c => c.Rank) * 10;
+                            break;
+                        }
+                    }
+                    loserStartVal = currentCredits + penalty;
+                }
+
+                // [FIX] クレジット表示を計算前の値でロックする
+                uiController.SetDisplayedCredit(actorId, loserStartVal);
+
+                CreateActorCreditCardUI(actorId, new Vector2(x, y), false, loserStartVal);
             }
 
-            ShowTotalScore(globalTotal, winnerName);
+            // [FIX] 生成・配置直後のワールド座標を確定させるため、レイアウトを強制更新する
+            if (_uiContainer != null) {
+                UnityEngine.UI.LayoutRebuilder.ForceRebuildLayoutImmediate(_uiContainer.GetComponent<RectTransform>());
+            }
 
-            foreach (var kvp in preCapturedRects)
+            // 勝者の表示も固定
+            if (fm != null && fm.PlayerCredits.ContainsKey(winnerId))
             {
-                int actorId = kvp.Key;
-                var cardRects = kvp.Value;
-                GameObject nameLabel = ShowCenterTextPersistent($"Player {actorId}", Color.white, 60);
-                yield return new WaitForSeconds(0.7f);
-                yield return StartCoroutine(Co_AnimateCardsToCenter(cardRects, new Vector2(0f, -300f)));
-                yield return new WaitForSeconds(0.3f);
+                uiController.SetDisplayedCredit(winnerId, winnerStartVal);
+            }
 
-                int subTotal = 0;
-                // 小計表示は削除
+            if (uiController != null) uiController.SetGameMainUIActive(false);
+            yield return new WaitForSeconds(0.5f);
+
+            // [FIX] 勝者の数値を逐次加算するために現在の表示値を管理
+            int runningWinnerValue = winnerStartVal;
+
+            // 2. 勝者の演出（ここではOut勝利の名前を表示）
+            string winnerName = _sessionActorsUI[winnerId].nameText.text;
+            yield return StartCoroutine(Co_AnimateWinnerReveal(winnerId, "", "WINNER!")); // Out勝利時は手札公開済み
+
+            // 3. 各敗者の手札を自分のカードへ
+            foreach (var actorId in loserIds)
+            {
+                if (!preCapturedRects.ContainsKey(actorId)) continue;
+                var lUI = _sessionActorsUI[actorId];
+                var cardRects = preCapturedRects[actorId];
+
+                // 敗者の手札を自分のカードの近くに集める
+                yield return StartCoroutine(Co_AnimateCardsToCenter(cardRects, lUI.rectTransform.anchoredPosition + new Vector2(0, -180)));
+                
+                int totalLCCPenalty = 0;
                 foreach (var rt in cardRects)
                 {
                     if (rt == null) continue;
                     var cui = rt.GetComponent<CardUI>();
                     int rank = (cui != null) ? cui.CardInfo.Rank : 0;
-                    subTotal += rank * 10;
-                    // カード吸い込み時に合計ラベルを更新するため累積値を渡す
-                    yield return StartCoroutine(Co_AnimateOneCard(rt, rank, globalTotal + subTotal));
-                }
-                yield return new WaitForSeconds(0.4f);
+                    int penalty = rank * 10;
+                    totalLCCPenalty += penalty;
 
-                // 小計ラベルと数字の吸い込み演出は削除
-                globalTotal += subTotal;
-                UpdateTotalScore(globalTotal);
-                yield return new WaitForSeconds(0.4f);
-                if (nameLabel != null) Destroy(nameLabel);
-                yield return new WaitForSeconds(1.0f);
+                    // 吸い込みとチップ生成
+                    yield return StartCoroutine(Co_SuckElementToTarget(rt, lUI.rectTransform.position, 0.3f));
+                    Destroy(rt.gameObject);
+                    
+                    // 個別のカードごとにチップを飛ばさず、一旦数値を減らす演出のみ
+                    int currentFrom = lUI.currentDisplayValue;
+                    yield return StartCoroutine(Co_UpdateActorCredit(actorId, currentFrom - penalty, 0.15f));
+                    ShowFloatingText(lUI.rectTransform, $"-{penalty}", Color.red, 35);
+                }
+                // 合計額に加算
+                runningWinnerValue += totalLCCPenalty;
+            } // END of foreach (var actorId in loserIds)
+ 
+            // 4. すべての敗者からの減算が完了した後、一括加算（勝者へ）
+            if (runningWinnerValue > winnerStartVal)
+            {
+                // 各敗者から少しずつチップを飛ばす、もしくは合計分を代表して1つ飛ばす
+                // ユーザーの要望「まとめて加算」に合わせ、最後に代表して1回（または各プレイヤーから流れるように）加算
+                foreach (var actorId in loserIds)
+                {
+                    // その敗者が支払った分を計算（本来は保持しておくべきだが、簡易的に再計算または全額を代表者から）
+                    // ここでは各敗者のコンテナからチップを発生させる
+                    yield return StartCoroutine(Co_SpawnChipAndSuck(actorId, winnerId, 0)); // 0指定で演出のみ
+                }
+                
+                // 数値を最終値へ
+                yield return StartCoroutine(Co_UpdateActorCredit(winnerId, runningWinnerValue, 0.5f, false));
             }
 
-            ShowCenterText($"{winnerName}  +{globalTotal} Credits!", Color.cyan, 70);
-            yield return new WaitForSeconds(2.5f);
-            Cleanup();
-            uiController.ShowRoundResult($"{winnerName} OUT WIN!", isFinal);
+            yield return new WaitForSeconds(0.5f);
+            ShowCenterText($"{winnerName}  OUT  WIN!", Color.cyan);
+            yield return new WaitForSeconds(0.5f);
             
-                if (DonFusionManager2D.Instance != null)
-                    DonFusionManager2D.Instance.RPC_ReportAnimationFinished();
-            } finally {
+            // [FIX] 吸い込み演出を廃止し、数値の最終同期とフェードアウトのみを行う
+            if (_sessionActorsUI.ContainsKey(winnerId))
+            {
+                wUI = _sessionActorsUI[winnerId];
+                int localActorId = uiController.GetLocalActorId();
+                
+                // 数値を最終同期（バッファ更新）
+                // 数値を最終同期（計算値を優先）
+                uiController.UpdateDisplayedCredit(winnerId, runningWinnerValue);
+                
+                if (DonFusionManager2D.Instance != null && DonFusionManager2D.Instance.PlayerCredits.ContainsKey(winnerId)) {
+                    int serverVal = DonFusionManager2D.Instance.PlayerCredits[winnerId];
+                    if (serverVal != 0) uiController.UpdateDisplayedCredit(winnerId, serverVal);
+                }
+                
+                // フェードアウト
+                yield return StartCoroutine(Co_FadeOutAndDestroy(wUI.root, 0.4f));
+            }
+
+            Cleanup();
+            uiController.ShowRoundResult($"{winnerName}  OUT  WIN!", isFinal);
+            
+            } // END of try
+            finally {
                 IsAnimating = false;
+                if (DonFusionManager2D.Instance != null) DonFusionManager2D.Instance.RPC_ReportAnimationFinished();
                 if (uiController != null) uiController.SetGameMainUIActive(true);
             }
         }
@@ -372,58 +623,33 @@ namespace DonGame2D.UI
         private IEnumerator Co_AnimateDonCalculation(int baseVal, int multiplier, string label, RectTransform overrideCard = null)
         {
             RectTransform topCard = overrideCard;
-            if (topCard == null)
-            {
-                if (uiController.discardPileContainer == null || uiController.discardPileContainer.childCount == 0)
-                {
-                    Debug.LogWarning("[Animation] DonCalc: No card in discardPile and no overrideCard.");
-                    yield return new WaitForSeconds(0.4f);
-                    yield break;
-                }
-                uiController.discardPileContainer.SetAsLastSibling();
-                topCard = uiController.discardPileContainer.GetChild(uiController.discardPileContainer.childCount - 1) as RectTransform;
-            }
-
             if (topCard == null) yield break;
 
-            // 確保エリアへ親替えて最前面へ
-            if (uiController.revealedHandContainer != null) {
-                topCard.SetParent(uiController.revealedHandContainer, true);
-                topCard.gameObject.SetActive(true); // Ensure visibility
-            }
-
-            Vector2 startAnchored = topCard.anchoredPosition;
-            Vector2 upAnchored    = startAnchored + new Vector2(0f, 60f);
-
-            // 1. カードを浮かせるアニメーションは削除
-            // yield return new WaitForSeconds(0.1f); // This line was part of the original animation flow.
-
-            // 2. 中央へ移動させず、現在の位置（捨て場）で計算
-            // Vector2 centralLocalPos = new Vector2(0f, 180f);
-            // yield return StartCoroutine(Co_MoveLocal(topCard, topCard.anchoredPosition, centralLocalPos, 0.45f));
-            yield return new WaitForSeconds(0.2f);
-            
-            // 3. 倍率とスコアの演出（ポップアップ数字）は削除
-            int totalGain = baseVal * multiplier;
-            yield return new WaitForSeconds(0.2f);
-
-            // 4. 吸い込み
-            if (_totalScoreLabelObj != null)
-            {
-                RectTransform targetTotalRt = _totalScoreLabelObj.GetComponent<RectTransform>();
-
-                // 数字のみの吸い込みは削除
-                StartCoroutine(Co_SuckElementToTarget(topCard, _totalScoreLabelObj.transform.position, 0.45f));
+            // overrideCardが渡された場合はすでに_uiContainer下に配置済みのため
+            // SetParentは行わず、そのまま現在位置から中央へアニメーションする
+            if (overrideCard == null && _uiContainer != null) {
+                topCard.SetParent(_uiContainer.transform, true);
                 
-                // popup破棄は不要
-                yield return new WaitForSeconds(0.3f);
-                if (topCard != null) topCard.gameObject.SetActive(false);
-                StartCoroutine(Co_PunchScale(targetTotalRt, 1.35f, 0.25f));
+                // 座標計算の狂いを防ぐため、アンカーとピボットを中央にリセット
+                topCard.anchorMin = new Vector2(0.5f, 0.5f);
+                topCard.anchorMax = new Vector2(0.5f, 0.5f);
+                topCard.pivot = new Vector2(0.5f, 0.5f);
+                
+                topCard.SetAsLastSibling();
+                topCard.gameObject.SetActive(true);
+                // レイアウト確定
+                UnityEngine.UI.LayoutRebuilder.ForceRebuildLayoutImmediate(_uiContainer.GetComponent<RectTransform>());
             }
-            else
-            {
-                if (topCard != null) topCard.gameObject.SetActive(false);
-            }
+
+            // [IMPROVED] 現在位置から中央（anchoredPosition = 0,0）へ移動させる
+            Vector2 centralLocalPos = new Vector2(0f, 0f); // 画面中央ど真ん中
+            Vector3 targetScale = Vector3.one * 2.0f;     // 大きく表示
+
+            // 移動と拡大
+            yield return StartCoroutine(Co_MoveLocalAndScale(topCard, topCard.anchoredPosition, centralLocalPos, topCard.localScale, targetScale, 0.4f));
+            
+            // 強調時間
+            yield return new WaitForSeconds(0.4f);
         }
 
         private IEnumerator Co_AnimateDiscardCard(int baseVal) { yield return StartCoroutine(Co_AnimateDonCalculation(baseVal, 2, "DON x2")); }
@@ -435,10 +661,14 @@ private IEnumerator Co_CaptureHandCards(int loserId, IList<CardInfo> cards, List
             if (uiController == null) yield break;
 
             if (uiController != null) uiController.SetPlayerPeripheralActive(loserId, false);
-            uiController.revealedHandContainer.SetAsLastSibling();
+            // [FIXED] 個別コンテナではなく、演出用オーバーレイ（_uiContainer）を最前面へ
+            if (_uiContainer != null) _uiContainer.transform.SetAsLastSibling();
 
-            var lg = uiController.revealedHandContainer.GetComponent<LayoutGroup>();
-            if (lg != null) lg.enabled = false;
+            // [FIXED] レイアウトグループの干渉を防ぐ（念のため個別コンテナ側も）
+            if (uiController != null && uiController.revealedHandContainer != null) {
+                var lg = uiController.revealedHandContainer.GetComponent<LayoutGroup>();
+                if (lg != null) lg.enabled = false;
+            }
 
             int count = cards.Count;
             int localActorId = uiController.GetLocalActorId();
@@ -501,7 +731,8 @@ private IEnumerator Co_CaptureHandCards(int loserId, IList<CardInfo> cards, List
                     var cui = existing.GetComponent<CardUI>();
                     if (cui == null)
                     {
-                        GameObject go = Instantiate(uiController.cardPrefab, uiController.revealedHandContainer);
+                        // [FIXED] 親を _uiContainer に変更
+                        GameObject go = Instantiate(uiController.cardPrefab, _uiContainer.transform);
                         rt = go.GetComponent<RectTransform>();
                         rt.position = startWorldPos;
                         rt.rotation = startWorldRot;
@@ -511,7 +742,8 @@ private IEnumerator Co_CaptureHandCards(int loserId, IList<CardInfo> cards, List
                     else
                     {
                         rt = existing.GetComponent<RectTransform>();
-                        rt.SetParent(uiController.revealedHandContainer, true);
+                        // [FIXED] 親を _uiContainer に変更
+                        rt.SetParent(_uiContainer.transform, true);
                     }
                     rt.gameObject.SetActive(true);
                     rt.localScale = Vector3.one;
@@ -519,7 +751,8 @@ private IEnumerator Co_CaptureHandCards(int loserId, IList<CardInfo> cards, List
                 }
                 else
                 {
-                    GameObject go = Instantiate(uiController.cardPrefab, uiController.revealedHandContainer);
+                    // [FIXED] 親を _uiContainer に変更
+                    GameObject go = Instantiate(uiController.cardPrefab, _uiContainer.transform);
                     CardUI cui = go.GetComponent<CardUI>();
                     if (cui != null) cui.SetupFusion(cards[i], true);
                     rt = go.GetComponent<RectTransform>();
@@ -554,9 +787,9 @@ private IEnumerator Co_CaptureHandCards(int loserId, IList<CardInfo> cards, List
             if (count == 0) yield break;
             
             Vector2 basePivot = pivot ?? Vector2.zero;
-            float spacing = Mathf.Min(100f, 650f / Mathf.Max(1, count));
+            float spacing = Mathf.Min(110f, 750f / Mathf.Max(1, count)); // 少し間隔を広げる
             float startX = -((count - 1) * spacing) / 2f;
-            float arcHeight = 60f; // より強調された扇状の高さ
+            float arcHeight = 85f; // より強調された扇状の高さ（弧を深める）
             
             for (int i = 0; i < count; i++) {
                 RectTransform rt = cardRects[i];
@@ -579,6 +812,9 @@ private IEnumerator Co_CaptureHandCards(int loserId, IList<CardInfo> cards, List
                 
                 Vector2 targetLocal = new Vector2(xPos, yPos);
                 Quaternion targetRot = Quaternion.Euler(0, 0, angle);
+                
+                // カードの重なり順を調整（端から中心に向かって重なるように）
+                rt.SetAsLastSibling();
                 
                 // 半同時並行で移動（わずかなディレイを挟む）
                 StartCoroutine(Co_MoveLocalAndRotate(rt, rt.anchoredPosition, targetLocal, rt.localRotation, targetRot, 0.35f));
@@ -672,7 +908,21 @@ private IEnumerator Co_MoveLocal(RectTransform rt, Vector2 from, Vector2 to, flo
             }
             if (rt != null) rt.anchoredPosition = to;
         }
-private IEnumerator Co_MoveLocalAndRotate(RectTransform rt, Vector2 fromPos, Vector2 toPos, Quaternion fromRot, Quaternion toRot, float dur)
+        private IEnumerator Co_MoveLocalAndScale(RectTransform rt, Vector2 fromPos, Vector2 toPos, Vector3 fromScale, Vector3 toScale, float dur)
+        {
+            float elapsed = 0f;
+            while (elapsed < dur) {
+                if (rt == null) yield break;
+                elapsed += Time.deltaTime; 
+                float t = Mathf.SmoothStep(0f, 1f, elapsed / dur);
+                rt.anchoredPosition = Vector2.Lerp(fromPos, toPos, t);
+                rt.localScale = Vector3.Lerp(fromScale, toScale, t);
+                yield return null;
+            }
+            if (rt != null) { rt.anchoredPosition = toPos; rt.localScale = toScale; }
+        }
+
+        private IEnumerator Co_MoveLocalAndRotate(RectTransform rt, Vector2 fromPos, Vector2 toPos, Quaternion fromRot, Quaternion toRot, float dur)
         {
             float elapsed = 0f;
             while (elapsed < dur) {
@@ -791,14 +1041,40 @@ private void ShowTotalScore(int value, string winnerName)
         }
         public List<CardInfo> ParseHandStr(string s) { var list = new List<CardInfo>(); if (string.IsNullOrEmpty(s)) return list; var cards = s.Split(';'); foreach (var c in cards) { var p = c.Split(','); if (p.Length == 2 && int.TryParse(p[0], out int st) && int.TryParse(p[1], out int r)) list.Add(new CardInfo((Suit)st, r)); } return list; }
         private void SetOverlay(bool a) { if (uiController.animationOverlay != null) uiController.animationOverlay.SetActive(a); if (uiController.revealedHandContainer != null) { uiController.revealedHandContainer.gameObject.SetActive(a); if (a) uiController.revealedHandContainer.SetAsLastSibling(); } }
-        private void ClearRevealedHand() { if (uiController.revealedHandContainer != null) { foreach (Transform c in uiController.revealedHandContainer) Destroy(c.gameObject); } }
-private void Cleanup()
+        private void ClearRevealedHand()
+        {
+            if (uiController != null && uiController.revealedHandContainer != null)
+            {
+                foreach (Transform c in uiController.revealedHandContainer)
+                {
+                    if (c != null) Destroy(c.gameObject);
+                }
+            }
+
+            // [FIXED] 構造的な保護: _creditRoot 以外のすべての子要素を削除する
+            if (_uiContainer != null)
+            {
+                foreach (Transform child in _uiContainer.transform)
+                {
+                    if (child == null) continue;
+                    
+                    // スコア表示のルート（_creditRoot）は絶対に消さない
+                    if (_creditRoot != null && child == _creditRoot) continue;
+
+                    // それ以外（カード、演出テキスト、チップ等）はすべて削除
+                    Destroy(child.gameObject);
+                }
+            }
+        }
+        private void Cleanup()
         {
             ClearRevealedHand(); SetOverlay(false);
             if (uiController.animationOverlay != null) { foreach (Transform c in uiController.animationOverlay.transform) Destroy(c.gameObject); }
             if (_totalScoreLabelObj != null) { Destroy(_totalScoreLabelObj); _totalScoreLabelObj = null; }
             if (_subTotalLabelObj != null) { Destroy(_subTotalLabelObj); _subTotalLabelObj = null; }
             if (_winnerNameLabelObj != null) { Destroy(_winnerNameLabelObj); _winnerNameLabelObj = null; }
+            if (_uiContainer != null) { Destroy(_uiContainer); _uiContainer = null; }
+            _sessionActorsUI.Clear();
             if (uiController.drawButton != null) uiController.drawButton.interactable = true;
             if (uiController.donButton != null) uiController.donButton.interactable = true;
             if (uiController != null) {
@@ -815,7 +1091,7 @@ private void Cleanup()
             }
         }
         public void ShowDonFloatingText(Transform target) { ShowFloatingText(target, "Don!", Color.yellow, 100); }
-        private void ShowFloatingText(Transform target, string msg, Color color, int fontSize = 52) {
+        public void ShowFloatingText(Transform target, string msg, Color color, int fontSize = 52) {
             if (uiController.floatingTextPrefab == null) return;
             Transform parent = (uiController.animationOverlay != null) ? uiController.animationOverlay.transform : uiController.transform;
             Vector3 spawnPos = (target != null) ? target.position + new Vector3(0, 60f, 0) : Vector3.zero;
@@ -867,6 +1143,203 @@ private void Cleanup()
             float elapsed = 0f;
             while (elapsed < dur) { if (t == null) yield break; elapsed += Time.deltaTime; t.position = Vector3.Lerp(from, to, Mathf.SmoothStep(0f, 1f, elapsed / dur)); yield return null; }
             if (t != null) t.position = to;
+        }
+
+        private void SetupUIContainer()
+        {
+            if (_uiContainer != null) return;
+            _uiContainer = new GameObject("ScoreAnimationUIContainer", typeof(RectTransform));
+            _uiContainer.transform.SetParent(uiController.animationOverlay != null ? uiController.animationOverlay.transform : uiController.transform, false);
+            var rt = _uiContainer.GetComponent<RectTransform>();
+            rt.anchorMin = Vector2.zero; rt.anchorMax = Vector2.one;
+            rt.offsetMin = Vector2.zero; rt.offsetMax = Vector2.zero;
+
+            // [NEW] スコアUI専用の保護コンテナを作成
+            GameObject cr = new GameObject("CreditRoot", typeof(RectTransform));
+            _creditRoot = cr.GetComponent<RectTransform>();
+            _creditRoot.SetParent(_uiContainer.transform, false);
+            _creditRoot.anchorMin = Vector2.zero; _creditRoot.anchorMax = Vector2.one;
+            _creditRoot.offsetMin = Vector2.zero; _creditRoot.offsetMax = Vector2.zero;
+        }
+
+        private ActorCreditUI CreateActorCreditCardUI(int actorId, Vector2 anchoredPos, bool isWinner, int customStartValue = -1)
+        {
+            if (uiController.creditCardObject == null) return null;
+            
+            // [PROTECTED] 親を _creditRoot に設定
+            GameObject cardObj = Instantiate(uiController.creditCardObject, (_creditRoot != null ? _creditRoot : _uiContainer.transform));
+            cardObj.SetActive(true);
+            var rt = cardObj.GetComponent<RectTransform>();
+            rt.anchorMin = rt.anchorMax = new Vector2(0.5f, 0.5f);
+            rt.pivot = new Vector2(0.5f, 0.5f);
+            rt.anchoredPosition = anchoredPos;
+            cardObj.transform.localScale = Vector3.one * 0.8f; 
+            
+            // デザインをそのまま使用するため、中のTextを探す
+            Text[] allTexts = cardObj.GetComponentsInChildren<Text>(true);
+            Text valTxt = null;
+            Text nTxt = null;
+
+            if (allTexts.Length >= 1) valTxt = allTexts[0]; 
+            if (allTexts.Length >= 2) nTxt = allTexts[1];
+
+            if (nTxt == null)
+            {
+                GameObject nameObj = new GameObject("PlayerName", typeof(RectTransform), typeof(Text));
+                nameObj.transform.SetParent(cardObj.transform, false);
+                var nameRt = nameObj.GetComponent<RectTransform>();
+                nameRt.anchoredPosition = new Vector2(0, 40); 
+                nTxt = nameObj.GetComponent<Text>();
+                nTxt.font = uiController.mainFontBold ?? Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
+                nTxt.fontSize = 24;
+                nTxt.alignment = TextAnchor.MiddleCenter;
+                nTxt.color = Color.white;
+            }
+
+            var fm = DonFusionManager2D.Instance;
+            int startVal = customStartValue;
+            if (startVal == -1) // 指定がない場合のみ現在値を読み込む
+            {
+                startVal = (fm != null && fm.PlayerCredits.ContainsKey(actorId)) ? fm.PlayerCredits[actorId] : 0;
+            }
+
+            nTxt.text = (actorId == -1) ? "Winner" : $"Player {actorId}";
+            valTxt.text = startVal.ToString();
+
+            ActorCreditUI ui = new ActorCreditUI {
+                root = cardObj,
+                creditText = valTxt,
+                nameText = nTxt,
+                currentDisplayValue = startVal,
+                rectTransform = rt
+            };
+            _sessionActorsUI[actorId] = ui;
+            return ui;
+        }
+
+        private IEnumerator Co_UpdateActorCredit(int actorId, int targetValue, float duration = 0.5f, bool updateGlobalUI = true)
+        {
+            if (!_sessionActorsUI.ContainsKey(actorId)) yield break;
+            var ui = _sessionActorsUI[actorId];
+            int startVal = ui.currentDisplayValue;
+            float elapsed = 0f;
+            while (elapsed < duration)
+            {
+                // [IMPROVED] MissingReferenceException 防止のための厳格な Null チェック
+                if (ui == null || ui.root == null || ui.creditText == null) yield break;
+
+                elapsed += Time.deltaTime;
+                float t = elapsed / duration;
+                int current = (int)Mathf.Lerp(startVal, targetValue, t);
+                
+                // 再度チェック（1フレーム待機後の安全性）
+                if (ui.creditText != null) {
+                    ui.creditText.text = current.ToString();
+                }
+                yield return null;
+            }
+            if (ui != null && ui.creditText != null) {
+                ui.creditText.text = targetValue.ToString();
+                ui.currentDisplayValue = targetValue;
+            }
+            
+            // [FIX] グローバル表示 (右上のメインクレジット) への反映を制御
+            if (updateGlobalUI && uiController != null) {
+                uiController.UpdateDisplayedCredit(actorId, targetValue);
+            }
+        }
+
+        private IEnumerator Co_SpawnChipAndSuck(int fromActorId, int toActorId, int valueAmount)
+        {
+            if (!_sessionActorsUI.ContainsKey(fromActorId) || !_sessionActorsUI.ContainsKey(toActorId)) yield break;
+            if (chipSprite == null) yield break;
+
+            float yOffset = -80f; 
+            Vector3 startPos = _sessionActorsUI[fromActorId].rectTransform.position + new Vector3(0, yOffset, 0);
+            
+            Vector3 endPos = _sessionActorsUI[toActorId].rectTransform.position + new Vector3(0, yOffset, 0);
+
+            GameObject chip = new GameObject("Chip", typeof(RectTransform), typeof(Image));
+            chip.transform.SetParent(_uiContainer.transform, false);
+            chip.transform.position = startPos;
+            var img = chip.GetComponent<Image>();
+            img.sprite = chipSprite;
+            img.SetNativeSize();
+            chip.transform.localScale = Vector3.one * 0.25f;
+
+            // チップの下に数値Labelを追加
+            GameObject valObj = new GameObject("Value", typeof(RectTransform), typeof(Text));
+            valObj.transform.SetParent(chip.transform, false);
+            var valRt = valObj.GetComponent<RectTransform>();
+            valRt.anchoredPosition = new Vector2(0, -60); // チップの下側
+            var valTxt = valObj.GetComponent<Text>();
+            valTxt.text = valueAmount.ToString();
+            valTxt.font = uiController.mainFontBold ?? Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
+            valTxt.fontSize = 60; // チップ自体を小さくしているので大きめに設定
+            valTxt.alignment = TextAnchor.MiddleCenter;
+            valTxt.color = Color.white;
+            valTxt.horizontalOverflow = HorizontalWrapMode.Overflow;
+            valTxt.verticalOverflow = VerticalWrapMode.Overflow;
+
+            // チップが勝者へ飛ぶ
+            yield return StartCoroutine(Co_SuckElementToTarget(chip.GetComponent<RectTransform>(), endPos, 0.5f));
+
+            // 勝者のクレジットを増やす演出
+            int currentTo = _sessionActorsUI[toActorId].currentDisplayValue;
+            StartCoroutine(Co_UpdateActorCredit(toActorId, currentTo + valueAmount, 0.2f));
+            
+            // 勝者側にプラス数値を表示
+            ShowFloatingText(_sessionActorsUI[toActorId].rectTransform, $"+{valueAmount}", Color.green, 40);
+
+            Destroy(chip);
+        }
+        private Vector2 GuessRevealPositionByActorId(int targetActorId)
+        {
+            var fm = DonFusionManager2D.Instance;
+            if (fm == null) return new Vector2(0, 300);
+
+            int localId = uiController.GetLocalActorId();
+            int total = fm.Actors.Length;
+            int myIdx = fm.GetActorIndex(localId);
+            int targetIdx = fm.GetActorIndex(targetActorId);
+
+            if (myIdx < 0 || targetIdx < 0) return new Vector2(0, 300);
+
+            int relIdx = (targetIdx - myIdx + total) % total;
+            
+            // 4人対戦を想定した簡易配置（画面端から内側へ）
+            if (total == 4) {
+                switch (relIdx) {
+                    case 1: return new Vector2(-400, 0); // 左
+                    case 2: return new Vector2(0, 300);   // 上
+                    case 3: return new Vector2(400, 0);  // 右
+                }
+            } else {
+                // 8人などの場合は角度から計算
+                float angle = 270f - (360f / total) * relIdx;
+                float rad = angle * Mathf.Deg2Rad;
+                return new Vector2(Mathf.Cos(rad) * 400f, Mathf.Sin(rad) * 300f);
+            }
+            return new Vector2(0, 300);
+        }
+
+        private float GuessRotationByActorId(int targetActorId)
+        {
+            var fm = DonFusionManager2D.Instance;
+            if (fm == null) return 180f;
+
+            int localId = uiController.GetLocalActorId();
+            int total = fm.Actors.Length;
+            int myIdx = fm.GetActorIndex(localId);
+            int targetIdx = fm.GetActorIndex(targetActorId);
+
+            if (myIdx < 0 || targetIdx < 0) return 180f;
+
+            int relIdx = (targetIdx - myIdx + total) % total;
+            
+            // プレイヤーの座席位置（270, 180, 90, 0）に +90 した値をベースとする
+            float seatAngle = 270f - (360f / total) * relIdx;
+            return seatAngle + 90f;
         }
     }
 }
