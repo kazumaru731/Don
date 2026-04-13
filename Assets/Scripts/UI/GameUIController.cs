@@ -116,6 +116,7 @@ namespace DonGame2D.UI
             if (drawButton != null)
             {
                 drawButton.onClick.AddListener(() => {
+                    if (AudioManager.Instance != null) AudioManager.Instance.PlayDraw();
                     if (useFusion) DonFusionManager2D.Instance?.RequestDraw();
                     else DonGameManager.Instance?.PlayerDraw(DonGameManager.Instance.players[0]);
                 });
@@ -171,6 +172,7 @@ namespace DonGame2D.UI
             if (discardDonButton != null)
             {
                 discardDonButton.onClick.AddListener(() => {
+                    if (AudioManager.Instance != null) AudioManager.Instance.PlayDon();
                     if (useFusion && DonFusionManager2D.Instance != null && DonFusionManager2D.Instance.Object != null)
                     {
                         int localId = GetLocalActorId();
@@ -439,6 +441,7 @@ namespace DonGame2D.UI
                     discardDonButton.onClick.RemoveAllListeners();
                     discardDonButton.onClick.AddListener(() =>
                     {
+                        if (AudioManager.Instance != null) AudioManager.Instance.PlayDon();
                         if (useFusion && DonFusionManager2D.Instance != null && DonFusionManager2D.Instance.Object != null)
                         {
                             int lId = GetLocalActorId();
@@ -1187,6 +1190,7 @@ namespace DonGame2D.UI
 
         private System.Collections.IEnumerator AnimateSingleCardToTarget(CardUI ui, Vector3 start, Vector3 target, float duration, bool destroyAtEnd)
         {
+            if (AudioManager.Instance != null) AudioManager.Instance.PlayDeal();
             float elapsed = 0f;
             while (elapsed < duration)
             {
@@ -1292,6 +1296,7 @@ namespace DonGame2D.UI
 
         private System.Collections.IEnumerator OpponentPlayAnimationCoroutine(int actorId, Vector3 startPos, CardInfo card)
         {
+            if (AudioManager.Instance != null) AudioManager.Instance.PlayPlay();
             isOpponentCardAnimationRunning = true;
             pendingDiscardCard = default;
             Transform canvasTransform = discardPileContainer.GetComponentInParent<Canvas>().transform;
@@ -1375,6 +1380,7 @@ namespace DonGame2D.UI
 
         private System.Collections.IEnumerator AnimateSingleOpponentDraw(GameObject cardObj, Vector3 start, Vector3 target)
         {
+            if (AudioManager.Instance != null) AudioManager.Instance.PlayDraw();
             float duration = 0.3f;
             float elapsed = 0f;
             while (elapsed < duration && cardObj != null)
@@ -1561,6 +1567,11 @@ namespace DonGame2D.UI
             {
                 scoreAnimationController.ShowFloatingText(target, $"+{amount}", Color.red, 60);
             }
+        }
+
+        public void ShowDonFloatingText(Transform target) { 
+            if (AudioManager.Instance != null) AudioManager.Instance.PlayDon();
+            scoreAnimationController.ShowFloatingText(target, "Don!", Color.yellow, 100); 
         }
 
         public void ShowRoundResult(string msg, bool isFinal)
@@ -2138,6 +2149,7 @@ namespace DonGame2D.UI
         public Transform GetOpponentCardContainer(int actorId) => opponentUIs.TryGetValue(actorId, out var info) ? info.cardIconContainer : null;
         public void PlayLocalDiscardAnimation(CardUI card, CardInfo cardInfo)
         {
+            if (AudioManager.Instance != null) AudioManager.Instance.PlayPlay();
             if (card == null || discardPileContainer == null) return;
 
             isLocalPlayerDiscarding = true;

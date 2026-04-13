@@ -10130,6 +10130,54 @@ CanvasRenderer:
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 1628350767}
   m_CullTransparentMesh: 1
+--- !u!1 &1652578148
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 1652578150}
+  - component: {fileID: 1652578149}
+  m_Layer: 0
+  m_Name: AudioManager
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!114 &1652578149
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1652578148}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: f816760363305d74c8325042cb8af60e, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  drawSound: {fileID: 8300000, guid: 58bd0ab0c29ba3443bfddbe15c4a91ac, type: 3}
+  dealSound: {fileID: 8300000, guid: cfb8581c7375da7428c4cf67a7eca8e0, type: 3}
+  donSound: {fileID: 8300000, guid: 3c1f41bd80126474983f9398c16f34b8, type: 3}
+  playSound: {fileID: 8300000, guid: 8402ad9e782ff2340b93dee7022d2db4, type: 3}
+--- !u!4 &1652578150
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1652578148}
+  serializedVersion: 2
+  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_LocalPosition: {x: 0, y: 0, z: 0}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 0}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
 --- !u!1 &1712561595
 GameObject:
   m_ObjectHideFlags: 0
@@ -12618,16 +12666,22 @@ MonoBehaviour:
   _IsDonWindowOpen:
     _value: 0
   _LastPlayedPlayerActorId: 0
+  _IsDonRestricted: []
   _IsWaitingForDonGaeshi:
+    _value: 0
+  _IsInitialDeal:
+    _value: 0
+  _IsDeterminingStarter:
     _value: 0
   _DonDeclarerActorId: 0
   _DonTargetActorId: 0
   _MaxRounds: 5
-  _IsInitialDeal:
-    _value: 0
   _PendingWinnerActorId: 0
   _DonCallerActorIds: 
   _DonCallersCount: 0
+  _IsStartingWild:
+    _value: 0
+  _FinishedAnimationCount: 0
 --- !u!4 &2145635367
 Transform:
   m_ObjectHideFlags: 0
@@ -12655,3 +12709,4 @@ SceneRoots:
   - {fileID: 1755475197}
   - {fileID: 1054705962}
   - {fileID: 569816129}
+  - {fileID: 1652578150}
