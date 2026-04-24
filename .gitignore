@@ -3,6 +3,10 @@
 [Oo]bj/
 [Bb]uild/
 [Bb]uilds/
+!iOSJ_Build/
+!iOSJ_Build/**/[Bb]uild/
+!Build/Build/
+!Build/Build/**/[Bb]uild/
 [Ll]ogs/
 [Mm]emoryCaptures/
 UserSettings/
