@@ -16,6 +16,8 @@ UserSettings/
 # Unity auto-generated
 *.pidb
 *.booproj
+!iOS_Build/
+!iOS_Build/**
 
 # OS
 .DS_Store
